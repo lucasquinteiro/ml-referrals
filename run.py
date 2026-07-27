@@ -358,13 +358,22 @@ def _render(product: Any, link: str, settings: Any, *, use_llm: bool) -> str:
     return tw.build_tweet(product, link, settings, deterministic=not use_llm)
 
 
-def _show(product: Any, link: str, text: str, header: str) -> None:
+def _show(product: Any, link: str, text: str, header: str, *, source: bool = False) -> None:
+    """Print one rendered tweet.
+
+    `source` adds the plain product URL above the tweet — handy when reviewing,
+    since the tweet itself only carries the affiliate link and you can't tell
+    what it points at without following it. Kept out of the tweet block so that
+    block stays exactly what gets published.
+    """
     import tweets as tw
 
     print()
     print(f"\033[1m─── {header} · {product.discount_pct}% OFF · "
           f"{product.matched_label} · "
           f"{tw.tweet_length(text, link)}/{tw.TWEET_LIMIT} chars\033[0m")
+    if source:
+        print(f"\033[2mproducto: {product.url}\033[0m")
     print(text)
 
 
@@ -392,7 +401,7 @@ def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
             return 1
         link = links[deals[0].product_id]
         text = _render(deals[0], link, settings, use_llm=args.llm)
-        _show(deals[0], link, text, "WOULD POST NEXT")
+        _show(deals[0], link, text, "WOULD POST NEXT", source=True)
 
         # The rest of the queue, so it's clear what follows on later runs.
         upcoming = deals[1 : 1 + args.queue]
@@ -436,7 +445,7 @@ def cmd_offers(args: argparse.Namespace, settings: Any) -> int:
         for i, product in enumerate(shown, 1):
             link = links[product.product_id]
             text = _render(product, link, settings, use_llm=args.llm)
-            _show(product, link, text, f"{i}/{len(shown)}")
+            _show(product, link, text, f"{i}/{len(shown)}", source=True)
 
         print()
         log_ok(f"{len(shown)} tweet(s) rendered (preview only)")
