@@ -49,10 +49,14 @@ def build_link(
     silently post untracked links — that would be lost commission.
     """
     if not tag or not tool_id:
+        missing = "ML_AFFILIATE_TAG" if not tag else "ML_AFFILIATE_TOOL_ID"
         raise AffiliateError(
-            "Missing affiliate tag/tool id. Set ML_AFFILIATE_TAG and "
-            "ML_AFFILIATE_TOOL_ID in .env (or affiliate.tag / affiliate.tool_id "
-            "in config.json). Both come from your Programa de Afiliados dashboard."
+            f"Missing {missing}. Configure both in one step by pasting any link "
+            "from your affiliate dashboard:\n"
+            "      ./run set-affiliate \"https://meli.la/...\"\n"
+            "  The tag is the important one — it's a required field of the link "
+            "builder request, so nothing can be generated without it. The tool "
+            "id only feeds this fallback param form."
         )
 
     base = _clean(product_url)
