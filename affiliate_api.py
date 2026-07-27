@@ -83,7 +83,13 @@ def _extract(entry: dict[str, Any], source_url: str = "") -> Optional[dict[str, 
     this response aren't documented anywhere and have no stability guarantee,
     so matching on content survives a rename.
     """
-    short = full = ""
+    # The field names as of 2026-07. Checked first because they're exact.
+    short = (entry.get("short_url") or "").strip()
+    full = (entry.get("long_url") or "").strip()
+    if short or full:
+        return {"short": short, "full": full or short}
+
+    # Renamed or restructured: fall back to identifying them by content.
     for s in _walk_strings(entry):
         if not s.startswith("http"):
             continue
@@ -174,8 +180,15 @@ class AffiliateLinkBuilder:
 
         entries = body.get("urls") or []
         out: dict[str, dict[str, str]] = {}
-        for entry in entries:
-            source = entry.get("entity") or ""
+        for i, entry in enumerate(entries):
+            # Success entries name the input as `origin_url`; error entries use
+            # `entity`. Fall back to position, since the response preserves the
+            # order of the request.
+            source = (
+                entry.get("origin_url")
+                or entry.get("entity")
+                or (urls[i] if i < len(urls) else "")
+            )
             if entry.get("error_code") or entry.get("message"):
                 msg = entry.get("message", "")
                 # 109 = the session's account isn't an affiliate. Worth failing
