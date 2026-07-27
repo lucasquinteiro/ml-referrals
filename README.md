@@ -37,34 +37,64 @@ Pages are rendered in a real headless Chromium via Playwright, so the site's own
 JS runs exactly as it does for a normal visitor. Requests are spaced out by
 `delay_between_pages_sec`; please leave that at a polite value.
 
-### Optional: scraping search with a logged-in session
+### Two accounts, two sessions
 
-`/ofertas` only shows what Mercado Libre itself flags as discounted. Search
-covers the **whole catalogue**, which is what you want for tracking specific
-products' prices over time and calling deals yourself. That needs a session:
+Two jobs want a logged-in Mercado Libre account, and they should **not** be the
+same account:
+
+| Role | Used for | Which account |
+| --- | --- | --- |
+| `scraping` | search pages behind the login wall | **a burner** — this is the one that risks getting flagged |
+| `affiliate` | minting real `meli.la` links | the account enrolled in the Programa de Afiliados |
+
+Scraping is what draws rate limits and account flags; affiliate is the account
+your commissions depend on. Keeping them apart means an aggressive crawl can
+never cost you your earnings.
 
 ```bash
-./run login                              # opens a browser; you log in yourself
+./run login --role scraping     # burner account
+./run login --role affiliate    # your real affiliate account
+```
+
+Each opens a real browser window and waits. You log in on Mercado Libre's own
+page — nothing passes through this code — and Playwright saves the cookies to
+`state/ml-session-<role>.json`, which is gitignored. Contexts are deliberately
+clean, so one login can't inherit the other's cookies.
+
+Each role is verified before saving: `scraping` checks a search page renders,
+`affiliate` actually mints a test link and tells you immediately if that account
+isn't enrolled (*"not found affiliate user with userId: …"*) rather than failing
+later at post time.
+
+`./run report` shows which account each role holds:
+
+```
+Mercado Libre sessions
+  scraping   QL20250628025057 (id 2524193616)
+  affiliate  sharkdeals (id 407099345)
+```
+
+If both roles end up on the same account, `login` warns you — that defeats the
+point of the split.
+
+Override the paths with `ML_STORAGE_STATE_PATH` (scraping) and
+`ML_AFFILIATE_STORAGE_STATE_PATH` (affiliate). A pre-split
+`state/ml-storage.json` is still honoured as the scraping session.
+
+**What the scraping session buys you:** `/ofertas` only shows what Mercado Libre
+itself flags as discounted; search covers the whole catalogue, which is what you
+need to track specific products and call deals yourself.
+
+```bash
 ./run ingest --source search --pages 2   # searches each configured keyword
 ```
 
-`./run login` opens a real browser window and waits. You type your credentials
-into Mercado Libre's own page — nothing passes through this code, and it verifies
-the session works before saving it. Playwright then writes the cookies to
-`state/ml-storage.json` (gitignored). Re-run it when the session expires.
+> This doesn't transfer to GitHub Actions cleanly: a datacenter IP plus a
+> logged-in session is a much stronger bot signal than your home connection, and
+> a headless run can't answer a re-auth or 2FA prompt. `/ofertas` needs no login
+> at all, which is why it stays the default.
 
-Set `ML_STORAGE_STATE_PATH` to point at a session file somewhere else.
-
-> **Think about which account you use.** This drives an automated, logged-in
-> session against a wall Mercado Libre put up deliberately, so there's a real
-> chance of the account getting rate-limited or flagged. If that's the same
-> account your affiliate earnings are tied to, that's your business at risk —
-> prefer a separate account. Also note this doesn't transfer to GitHub Actions
-> cleanly: a datacenter IP plus a logged-in session is a much stronger bot
-> signal than your home connection, and a headless run can't answer a re-auth
-> or 2FA prompt. `/ofertas` needs none of this, which is why it's the default.
-
-Category pages (`/c/<category>`) are *not* a way around this — they're browse
+Category pages (`/c/<category>`) are *not* a way around the wall — they're browse
 landing pages: no discount data, and `?page=2` returns the same items.
 
 ## Setup
@@ -118,9 +148,11 @@ builder entirely with `affiliate.use_link_builder: false` in `config.json`.
    activate your social profile).
 2. Generate one link in the [link builder](https://www.mercadolibre.com.ar/afiliados/linkbuilder)
    to learn your tag.
-3. **`./run login` with that same affiliate account.** This matters: the link
-   builder is tied to the logged-in user, so a session for any other account
-   fails with *"not found affiliate user with userId: …"*.
+3. **`./run login --role affiliate`** with that same account. This matters: the
+   link builder is tied to the logged-in user, so a session for any other
+   account fails with *"not found affiliate user with userId: …"*. Use
+   `--role scraping` with a separate burner — see [Two accounts, two
+   sessions](#two-accounts-two-sessions).
 4. Paste the generated link here:
 
 ```bash
@@ -227,7 +259,8 @@ instead (varied, but not reproducible).
 Everything else:
 
 ```bash
-./run login                     # optional: unlock search scraping
+./run login --role scraping     # burner, unlocks search scraping
+./run login --role affiliate    # real account, mints meli.la links
 ./run ingest --dry-run          # scrape + match, write nothing
 ./run offers --limit 20         # browse the whole queue
 ./run db --name offers          # query the store (see below)
@@ -368,6 +401,8 @@ repository secrets — `ML_AFFILIATE_TAG`, `ML_AFFILIATE_TOOL_ID`,
 | `affiliate.py` | `matt_word` / `matt_tool` link building |
 | `store.py` / `supabase_store.py` | price history, posts, runs |
 | `tweets.py` | tweet copy (LLM + templates) |
+| `auth.py` | Mercado Libre sessions, one per role |
+| `affiliate_api.py` | real link generation via ML's link builder |
 | `lib/twitter.py` | cookie loading, vendored from `twitter-updates` |
 | `lib/twitter_post.py` | `CreateTweet` via cookie auth |
 | `run.py` | CLI |

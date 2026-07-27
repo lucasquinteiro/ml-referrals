@@ -67,7 +67,13 @@ def _parse_args() -> argparse.Namespace:
     ing.add_argument("--source", choices=["ofertas", "search"], default="ofertas",
                      help="ofertas (default, no login) or search (needs ./run login)")
 
-    sub.add_parser("login", help="Log in to Mercado Libre once and save the session")
+    lg = sub.add_parser(
+        "login",
+        help="Save a Mercado Libre session (scraping burner or affiliate account)",
+    )
+    lg.add_argument("--role", choices=["scraping", "affiliate"], default="scraping",
+                    help="scraping = burner for search pages (default); "
+                         "affiliate = the account that mints your links")
 
     def _freshness_flags(p: argparse.ArgumentParser) -> None:
         p.add_argument("--max-age-hours", type=float, default=None,
@@ -157,12 +163,13 @@ def _scrape_and_match(
     where = "/ofertas" if source == "ofertas" else "search"
     log_stage(f"Scraping {settings.site} {where} ({pages} pages)")
     log_step(f"{len(keywords)} keyword(s): " + ", ".join(k.term for k in keywords))
-    log_step(f"session: {auth.describe_session()}")
+    log_step(f"scraping session: {auth.describe_session(auth.SCRAPING)}")
 
-    if source == "search" and not auth.has_session():
+    if source == "search" and not auth.has_session(auth.SCRAPING):
         raise SystemExit(
-            "Search needs a logged-in Mercado Libre session. Run `./run login` "
-            "first, or drop --source search to use /ofertas (no login needed)."
+            "Search needs a logged-in Mercado Libre session. Run "
+            "`./run login --role scraping` first (use a burner account), or "
+            "drop --source search to use /ofertas, which needs no login."
         )
 
     with MercadoLibreScraper(
@@ -298,7 +305,7 @@ def _resolve_links(
     if missing and tag and use_api:
         import auth
 
-        if auth.has_session():
+        if auth.has_session(auth.AFFILIATE):
             from affiliate_api import (
                 AffiliateAPIError, NotAnAffiliateError, create_links,
             )
@@ -325,8 +332,8 @@ def _resolve_links(
                 log_warn(f"link builder unavailable ({e}); falling back to "
                          "matt_word/matt_tool links")
         else:
-            log_step("no ML session — using matt_word/matt_tool links "
-                     "(`./run login` enables real short links)")
+            log_step("no affiliate session — using matt_word/matt_tool links "
+                     "(`./run login --role affiliate` enables real meli.la links)")
 
     # Whatever's left gets the param form.
     for product in products:
@@ -628,8 +635,14 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
 def cmd_report(args: argparse.Namespace, settings: Any) -> int:
     from lib.log import log_ok, log_stage, log_step
 
+    import auth
+
     store = _get_store(settings)
     try:
+        log_stage("Mercado Libre sessions")
+        for role in auth.ROLES:
+            log_step(f"{role:10} {auth.describe_session(role)}")
+
         stats = store.stats()
         log_stage("Store")
         for k, v in stats.items():
@@ -739,7 +752,7 @@ def cmd_check_affiliate(args: argparse.Namespace, settings: Any) -> int:
 def cmd_login(args: argparse.Namespace, settings: Any) -> int:
     import auth
 
-    return auth.login(settings.site)
+    return auth.login(settings.site, args.role)
 
 
 def main() -> int:

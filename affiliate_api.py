@@ -119,11 +119,11 @@ class AffiliateLinkBuilder:
         import auth
         from playwright.sync_api import sync_playwright
 
-        state = self.storage_state or auth.storage_state_path()
+        state = self.storage_state or auth.storage_state_path(auth.AFFILIATE)
         if not state:
             raise AffiliateAPIError(
-                "No Mercado Libre session. Run `./run login` with the account "
-                "that's enrolled in the affiliate program."
+                "No affiliate session. Run `./run login --role affiliate` and "
+                "sign in with the account enrolled in the Programa de Afiliados."
             )
 
         self._pw = sync_playwright().start()
@@ -185,7 +185,7 @@ class AffiliateLinkBuilder:
                         f"Mercado Libre says this account isn't an affiliate ({msg}).\n"
                         "  The saved session is for a different account than the one "
                         "enrolled in the Programa de Afiliados.\n"
-                        "  Fix: run `./run login` and sign in with the affiliate account."
+                        "  Fix: run `./run login --role affiliate` with the enrolled account."
                     )
                 log_warn(f"createLink failed for {source[:60]}: {msg}")
                 continue

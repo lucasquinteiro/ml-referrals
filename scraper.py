@@ -214,7 +214,7 @@ class MercadoLibreScraper:
         )
         # Reuse a saved login when there is one — /ofertas doesn't need it, but
         # search and product pages do. Anonymous is the default.
-        state = auth.storage_state_path() if self.use_session else None
+        state = auth.storage_state_path(auth.SCRAPING) if self.use_session else None
         self._ctx = self._browser.new_context(
             locale="es-AR",
             user_agent=UA,
