@@ -22,7 +22,8 @@ Typical local test drive:
     ./run post                      # publish it
 
     ./run db --name offers          # best current discounts
-    ./run check-affiliate <url>     # sanity-check your affiliate link shape
+    ./run set-affiliate <link>      # configure your affiliate tag from a
+                                    # link generated in the ML dashboard
 
 Posting is always ONE tweet per run. A burst of affiliate links reads as spam,
 and one at a time keeps every publish reviewable.
@@ -114,6 +115,14 @@ def _parse_args() -> argparse.Namespace:
     rep.add_argument("--limit", type=int, default=15)
     rep.add_argument("--export", metavar="PATH", default=None,
                      help="Write the full price history to a JSON file")
+
+    setaff = sub.add_parser(
+        "set-affiliate",
+        help="Configure your affiliate tag from a link generated in the dashboard",
+    )
+    setaff.add_argument("link", help="Any affiliate link you generated (short links OK)")
+    setaff.add_argument("--dry-run", action="store_true",
+                        help="Show what was parsed without writing .env")
 
     chk = sub.add_parser("check-affiliate", help="Print the affiliate link for a URL")
     chk.add_argument("url")
@@ -574,6 +583,75 @@ def cmd_report(args: argparse.Namespace, settings: Any) -> int:
     return 0
 
 
+def _write_env(updates: dict[str, str]) -> None:
+    """Set keys in .env, preserving everything else in the file."""
+    path = cfg.ENV_FILE
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+
+    for key, value in updates.items():
+        for i, line in enumerate(lines):
+            if line.strip().startswith(f"{key}=") or line.strip().startswith(f"#{key}="):
+                lines[i] = f"{key}={value}"
+                break
+        else:
+            lines.append(f"{key}={value}")
+
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def cmd_set_affiliate(args: argparse.Namespace, settings: Any) -> int:
+    """Configure the affiliate identity from a link generated in the dashboard.
+
+    Affiliate attribution is just two query params that never change per
+    product, so one dashboard link is enough to tag every future link.
+    """
+    from affiliate import build_link, parse_affiliate_link
+    from lib.log import log_err, log_ok, log_step, log_warn
+
+    info = parse_affiliate_link(args.link)
+    if info["resolved"] != args.link:
+        log_step(f"resolved to: {info['resolved'][:110]}")
+
+    if not info["tag"] or not info["tool"]:
+        log_err("Couldn't find matt_word and matt_tool in that link.")
+        log_step("Generate a link from a product page while logged in as an "
+                 "affiliate, then paste the whole thing (short links are fine).")
+        log_step("Expected something containing: ?matt_word=<tag>&matt_tool=<id>")
+        return 1
+
+    log_ok(f"tag  (matt_word): {info['tag']}")
+    log_ok(f"tool (matt_tool): {info['tool']}")
+
+    if info["shape"] == "social":
+        log_warn(
+            "This is a /social/ wrapper link. The default param form probably "
+            "still tracks, but if your dashboard reports nothing, set "
+            "affiliate.link_template in config.json to match the wrapper shape."
+        )
+
+    if args.dry_run:
+        log_step("--dry-run: .env not modified")
+        return 0
+
+    _write_env({
+        "ML_AFFILIATE_TAG": info["tag"],
+        "ML_AFFILIATE_TOOL_ID": info["tool"],
+    })
+    log_ok(f"written to {cfg.ENV_FILE} (gitignored)")
+
+    sample = build_link(
+        "https://www.mercadolibre.com.ar/producto-ejemplo/p/MLA12345678",
+        tag=info["tag"], tool_id=info["tool"],
+        extra_params=(settings.affiliate or {}).get("extra_params"),
+    )
+    print()
+    log_step("every link will now look like:")
+    log_step(f"  {sample}")
+    print()
+    log_step("Check it against your dashboard link, then:  ./run simulate")
+    return 0
+
+
 def cmd_check_affiliate(args: argparse.Namespace, settings: Any) -> int:
     from affiliate import AffiliateError, build_link_from_settings
     from lib.log import log_ok, log_step
@@ -609,6 +687,7 @@ def main() -> int:
         "db": cmd_db,
         "post": cmd_post,
         "report": cmd_report,
+        "set-affiliate": cmd_set_affiliate,
         "check-affiliate": cmd_check_affiliate,
     }
     try:

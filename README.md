@@ -76,12 +76,67 @@ python3 -m venv .venv
 cp .env.example .env      # then fill it in
 ```
 
+### Affiliate setup (the one thing you must do to publish)
+
+**There is no Mercado Libre affiliate API.** Their public API
+([developers.mercadolibre.com](https://developers.mercadolibre.com.ar/)) covers
+items, search, orders, shipping and users — there is no endpoint that mints
+affiliate links, and the affiliate program is dashboard-only.
+
+You don't need one. Attribution is carried by two query params that are **the
+same for every product you ever promote**:
+
+```
+?matt_word=<your tag>&matt_tool=<your tool id>
+```
+
+So you generate **one** link by hand, and this project applies your identity to
+unlimited product URLs from then on. That's the automation — there's nothing
+per-link to fetch.
+
+1. Join at **[mercadolibre.com.ar/afiliados](https://www.mercadolibre.com.ar/afiliados)**
+   (needs a Mercado Libre account; you'll get a confirmation mail and have to
+   activate your social profile).
+2. Generate a link for any product — from the affiliate dashboard, or the
+   "Compartir / Generar link de afiliado" button that appears on product pages
+   once you're approved.
+3. Paste it here:
+
+```bash
+./run set-affiliate "https://mercadolibre.com/sec/1AbCdEf"
+```
+
+That parses out your tag and tool id — following the redirect if it's a short
+`/sec/` link — and writes them to `.env`:
+
+```
+✓ tag  (matt_word): lucasq
+✓ tool (matt_tool): 68232872
+✓ written to .env (gitignored)
+
+  every link will now look like:
+    https://www.mercadolibre.com.ar/producto/p/MLA12345678?matt_word=lucasq&matt_tool=68232872&forceInApp=true
+```
+
+Existing keys in `.env` are preserved. Sanity-check any product URL with
+`./run check-affiliate <url>`.
+
+> Compare that generated link against the one your dashboard gave you. If your
+> account produces a different shape (some get a `/social/<tag>` wrapper), set
+> `affiliate.link_template` in `config.json` — `{url}`, `{url_encoded}`,
+> `{tag}` and `{tool}` are substituted. **Attribution fails silently if this is
+> wrong**, so it's worth one click through a test link to confirm the sale
+> registers.
+
+`post` refuses to publish without a tag configured — an untagged link is lost
+commission. `simulate` still works (it warns and previews with a plain URL).
+
 ### Credentials (`.env`)
 
 | Variable | Needed for | Where it comes from |
 | --- | --- | --- |
-| `ML_AFFILIATE_TAG` | posting | Programa de Afiliados dashboard (`matt_word`) |
-| `ML_AFFILIATE_TOOL_ID` | posting | same dashboard (`matt_tool`) |
+| `ML_AFFILIATE_TAG` | posting | set by `./run set-affiliate` (see above) |
+| `ML_AFFILIATE_TOOL_ID` | posting | set by `./run set-affiliate` (see above) |
 | `TWITTER_AUTH_TOKEN` | posting | `auth_token` cookie from a logged-in x.com session |
 | `TWITTER_CT0` | posting | `ct0` cookie from the same session |
 | `GROQ_API_KEY` | nicer tweet copy (optional) | console.groq.com |
@@ -156,6 +211,7 @@ Everything else:
 ./run offers --limit 20         # browse the whole queue
 ./run db --name offers          # query the store (see below)
 ./run report                    # summary of what's in the store
+./run set-affiliate <link>      # configure your affiliate tag
 ./run check-affiliate <url>     # verify your affiliate link shape
 ./run post --ingest             # scrape fresh, then post from that
 ```

@@ -74,6 +74,54 @@ def build_link(
     )
 
 
+def resolve_short_link(url: str, *, timeout: float = 15.0) -> str:
+    """Follow a mercadolibre.com/sec/... short link to its real destination.
+
+    The affiliate dashboard hands out short links; the tracking params only
+    become visible after the redirect.
+    """
+    import httpx
+
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+            r = c.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            return str(r.url)
+    except Exception:  # noqa: BLE001 - caller falls back to the original URL
+        return url
+
+
+def parse_affiliate_link(url: str) -> dict[str, str]:
+    """Pull the tracking identity out of a link generated in the dashboard.
+
+    Returns {"tag", "tool", "shape", "resolved"}. `shape` is "params" for the
+    normal ?matt_word=&matt_tool= form, or "social" when the account gets the
+    /social/<tag> wrapper, which needs a link_template instead.
+    """
+    def extract(u: str) -> tuple[str, str]:
+        q = dict(parse_qsl(urlparse(u).query))
+        return q.get("matt_word", "").strip(), q.get("matt_tool", "").strip()
+
+    # Read the URL as given first. Only chase a redirect when the params aren't
+    # already there — following one can drop the query string entirely.
+    resolved = url
+    tag, tool = extract(url)
+    if not (tag and tool) and ("/sec/" in url or "/social/" in url):
+        resolved = resolve_short_link(url)
+        r_tag, r_tool = extract(resolved)
+        if r_tag or r_tool:
+            tag, tool = r_tag or tag, r_tool or tool
+
+    parts = urlparse(resolved if resolved != url and (tag or tool) else url)
+    shape = "social" if "/social/" in parts.path else "params"
+    if shape == "social" and not tag:
+        # /social/<tag> — the tag is the path segment itself.
+        seg = [s for s in parts.path.split("/") if s]
+        if len(seg) >= 2:
+            tag = seg[1]
+
+    return {"tag": tag, "tool": tool, "shape": shape, "resolved": resolved}
+
+
 def build_link_from_settings(product_url: str, settings: Any) -> str:
     """Convenience wrapper that pulls credentials off a Settings object."""
     aff = settings.affiliate or {}
