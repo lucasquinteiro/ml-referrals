@@ -111,7 +111,11 @@ _DEFAULTS: dict[str, Any] = {
     "affiliate": {
         "tag": "",
         "tool_id": "",
-        # Extra query params appended to every affiliate link.
+        # Use MercadoLibre's own link builder (real meli.la short links with a
+        # signed ref=) when a session is available. Falls back to the param
+        # form below whenever it isn't.
+        "use_link_builder": True,
+        # Extra query params appended to every affiliate link (fallback form).
         "extra_params": {"forceInApp": "true"},
     },
 

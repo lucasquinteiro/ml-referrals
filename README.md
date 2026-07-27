@@ -78,29 +78,50 @@ cp .env.example .env      # then fill it in
 
 ### Affiliate setup (the one thing you must do to publish)
 
-**There is no Mercado Libre affiliate API.** Their public API
+There is no *documented* affiliate API — Mercado Libre's public API
 ([developers.mercadolibre.com](https://developers.mercadolibre.com.ar/)) covers
-items, search, orders, shipping and users — there is no endpoint that mints
-affiliate links, and the affiliate program is dashboard-only.
+items, search, orders, shipping and users, with nothing for affiliate links.
 
-You don't need one. Attribution is carried by two query params that are **the
-same for every product you ever promote**:
+But the dashboard's own link builder calls an internal endpoint, and this
+project uses it:
 
 ```
-?matt_word=<your tag>&matt_tool=<your tool id>
+POST /affiliate-program/api/v2/affiliates/createLink
+{"urls": ["https://.../p/MLA69985783"], "tag": "sharkdeals"}
 ```
 
-So you generate **one** link by hand, and this project applies your identity to
-unlimited product URLs from then on. That's the automation — there's nothing
-per-link to fetch.
+That's what produces real `meli.la/...` short links, and the full link's signed
+`ref=` blob — a signature we cannot construct ourselves. It's called exactly the
+way your browser calls it: your saved session from `./run login`, plus the CSRF
+token from the page. Generated links are cached in the `affiliate_links` table,
+so each product costs one round trip ever.
+
+**Two link forms, in preference order:**
+
+| | Form | Needs |
+| --- | --- | --- |
+| 1 | `https://meli.la/27eEpow` — real, signed | affiliate account session |
+| 2 | `...?matt_word=<tag>&matt_tool=<id>` | just the tag/tool id |
+
+Form 2 is the automatic fallback whenever the link builder isn't available, so
+a stale session degrades to a working link rather than no link. Disable the
+builder entirely with `affiliate.use_link_builder: false` in `config.json`.
+
+> The internal endpoint is undocumented and unversioned — Mercado Libre can
+> change or remove it without notice. The response is parsed by *shape* (which
+> string looks like a short link, which carries the tracking params) rather
+> than by field name, so a rename won't break it, but a redesign would. If it
+> ever fails you'll get form 2 and a warning, never a silent untagged link.
 
 1. Join at **[mercadolibre.com.ar/afiliados](https://www.mercadolibre.com.ar/afiliados)**
    (needs a Mercado Libre account; you'll get a confirmation mail and have to
    activate your social profile).
-2. Generate a link for any product — from the affiliate dashboard, or the
-   "Compartir / Generar link de afiliado" button that appears on product pages
-   once you're approved.
-3. Paste it here:
+2. Generate one link in the [link builder](https://www.mercadolibre.com.ar/afiliados/linkbuilder)
+   to learn your tag.
+3. **`./run login` with that same affiliate account.** This matters: the link
+   builder is tied to the logged-in user, so a session for any other account
+   fails with *"not found affiliate user with userId: …"*.
+4. Paste the generated link here:
 
 ```bash
 ./run set-affiliate "https://mercadolibre.com/sec/1AbCdEf"

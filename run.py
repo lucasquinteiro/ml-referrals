@@ -268,22 +268,87 @@ def _select_deals(store: Any, settings: Any) -> list[Any]:
     return off.filter_offers(matched, settings, exclude_ids=cooldown)
 
 
-def _render(product: Any, settings: Any, *, use_llm: bool, allow_untagged: bool):
-    """Build (link, text) for one product. Returns None when the affiliate tag
-    is missing and untagged links aren't acceptable."""
+def _resolve_links(
+    products: list[Any], settings: Any, store: Any, *, allow_untagged: bool
+) -> Optional[dict[str, str]]:
+    """Map product_id -> affiliate link for a batch, best source first.
+
+    1. cached links from a previous run
+    2. MercadoLibre's own link builder (signed `ref=`, short meli.la URL)
+    3. the matt_word/matt_tool param form
+
+    Returns None only when nothing usable could be produced and untagged links
+    aren't acceptable.
+    """
     from affiliate import AffiliateError, build_link_from_settings
-    from lib.log import log_err, log_warn
+    from lib.log import log_err, log_step, log_warn
+
+    tag = settings.affiliate_tag
+    aff_cfg = settings.affiliate or {}
+    use_api = aff_cfg.get("use_link_builder", True)
+
+    links: dict[str, str] = {}
+    if tag:
+        links.update(store.get_affiliate_links([p.product_id for p in products], tag))
+        if links:
+            log_step(f"{len(links)} link(s) from cache")
+
+    missing = [p for p in products if p.product_id not in links]
+
+    if missing and tag and use_api:
+        import auth
+
+        if auth.has_session():
+            from affiliate_api import (
+                AffiliateAPIError, NotAnAffiliateError, create_links,
+            )
+
+            try:
+                generated = create_links(
+                    [p.url for p in missing], site=settings.site, tag=tag
+                )
+                by_url = {p.url: p for p in missing}
+                for url, pair in generated.items():
+                    product = by_url.get(url)
+                    if not product:
+                        continue
+                    link = pair["short"] or pair["full"]
+                    links[product.product_id] = link
+                    store.save_affiliate_link(
+                        product_id=product.product_id, product_url=product.url,
+                        short_url=pair["short"], full_url=pair["full"], tag=tag,
+                    )
+            except NotAnAffiliateError as e:
+                log_err(str(e))
+                return None
+            except AffiliateAPIError as e:
+                log_warn(f"link builder unavailable ({e}); falling back to "
+                         "matt_word/matt_tool links")
+        else:
+            log_step("no ML session — using matt_word/matt_tool links "
+                     "(`./run login` enables real short links)")
+
+    # Whatever's left gets the param form.
+    for product in products:
+        if product.product_id in links:
+            continue
+        try:
+            links[product.product_id] = build_link_from_settings(product.url, settings)
+        except AffiliateError as e:
+            if not allow_untagged:
+                log_err(str(e))
+                return None
+            log_warn(f"{e}\n  Using an untagged link.")
+            links[product.product_id] = product.url
+
+    return links
+
+
+def _render(product: Any, link: str, settings: Any, *, use_llm: bool) -> str:
+    """Tweet text for one product with an already-resolved link."""
     import tweets as tw
 
-    try:
-        link = build_link_from_settings(product.url, settings)
-    except AffiliateError as e:
-        if not allow_untagged:
-            log_err(str(e))
-            return None
-        log_warn(f"{e}\n  Simulating with an untagged link.")
-        link = product.url
-    return link, tw.build_tweet(product, link, settings, deterministic=not use_llm)
+    return tw.build_tweet(product, link, settings, deterministic=not use_llm)
 
 
 def _show(product: Any, link: str, text: str, header: str) -> None:
@@ -315,10 +380,11 @@ def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
 
         log_stage(f"{len(deals)} offer(s) in the queue")
 
-        rendered = _render(deals[0], settings, use_llm=args.llm, allow_untagged=True)
-        if rendered is None:
+        links = _resolve_links(deals[:1], settings, store, allow_untagged=True)
+        if links is None:
             return 1
-        link, text = rendered
+        link = links[deals[0].product_id]
+        text = _render(deals[0], link, settings, use_llm=args.llm)
         _show(deals[0], link, text, "WOULD POST NEXT")
 
         # The rest of the queue, so it's clear what follows on later runs.
@@ -357,11 +423,12 @@ def cmd_offers(args: argparse.Namespace, settings: Any) -> int:
             return 0
 
         shown = deals[: args.limit]
+        links = _resolve_links(shown, settings, store, allow_untagged=True)
+        if links is None:
+            return 1
         for i, product in enumerate(shown, 1):
-            rendered = _render(product, settings, use_llm=args.llm, allow_untagged=True)
-            if rendered is None:
-                return 1
-            link, text = rendered
+            link = links[product.product_id]
+            text = _render(product, link, settings, use_llm=args.llm)
             _show(product, link, text, f"{i}/{len(shown)}")
 
         print()
@@ -527,11 +594,12 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
             return 0
 
         product = deals[0]
-        rendered = _render(product, settings, use_llm=args.llm,
-                           allow_untagged=args.dry_run)
-        if rendered is None:
+        links = _resolve_links([product], settings, store,
+                               allow_untagged=args.dry_run)
+        if links is None:
             return 1
-        link, text = rendered
+        link = links[product.product_id]
+        text = _render(product, link, settings, use_llm=args.llm)
         _show(product, link, text, "DRY RUN" if args.dry_run else "POSTING")
 
         print()

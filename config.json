@@ -31,6 +31,7 @@
   "affiliate": {
     "tag": "",
     "tool_id": "",
+    "use_link_builder": true,
     "extra_params": { "forceInApp": "true" }
   },
 
