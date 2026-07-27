@@ -130,6 +130,11 @@ def _parse_args() -> argparse.Namespace:
     setaff.add_argument("--dry-run", action="store_true",
                         help="Show what was parsed without writing .env")
 
+    sub.add_parser(
+        "affiliate-tags",
+        help="List the affiliate tags on your account and which one is active",
+    )
+
     chk = sub.add_parser("check-affiliate", help="Print the affiliate link for a URL")
     chk.add_argument("url")
 
@@ -742,6 +747,51 @@ def cmd_set_affiliate(args: argparse.Namespace, settings: Any) -> int:
     return 0
 
 
+def cmd_affiliate_tags(args: argparse.Namespace, settings: Any) -> int:
+    """Show the tags Mercado Libre has on this account, and flag mismatches."""
+    from affiliate_api import AffiliateAPIError, AffiliateLinkBuilder
+    from lib.log import log_err, log_ok, log_step, log_warn
+
+    configured = settings.affiliate_tag
+    try:
+        with AffiliateLinkBuilder(settings.site, configured or "x") as builder:
+            tags = builder.list_tags()
+    except AffiliateAPIError as e:
+        log_err(str(e))
+        return 1
+
+    if not tags:
+        log_warn("No tags found on the link builder page — Mercado Libre may "
+                 "have changed it. Check the dashboard directly.")
+        return 1
+
+    log_step(f"{len(tags)} tag(s) on this account:")
+    for t in tags:
+        mark = "\033[32m● in use\033[0m" if t.get("in_use") else "  unused "
+        here = "  \033[1m<- configured\033[0m" if t["tag"] == configured else ""
+        log_step(f"  {mark}  {t['tag']:22} {t.get('generated_date', '')[:19]}{here}")
+
+    names = [t["tag"] for t in tags]
+    if not configured:
+        log_warn("No tag configured. Set one with `./run set-affiliate <link>`.")
+        return 1
+    if configured not in names:
+        log_err(f"Configured tag '{configured}' isn't on this account. "
+                "Commissions won't be credited — fix ML_AFFILIATE_TAG in .env.")
+        return 1
+
+    active = next((t["tag"] for t in tags if t.get("in_use")), None)
+    if active and active != configured:
+        log_warn(f"'{configured}' is configured but '{active}' is the one marked "
+                 "in use on Mercado Libre.")
+        return 0
+
+    log_ok(f"links are being generated with '{configured}'")
+    log_step("Note: the /social/<slug> part of a link is your profile slug, not "
+             "the tag — the tag is the matt_word= param.")
+    return 0
+
+
 def cmd_check_affiliate(args: argparse.Namespace, settings: Any) -> int:
     from affiliate import AffiliateError, build_link_from_settings
     from lib.log import log_ok, log_step
@@ -778,6 +828,7 @@ def main() -> int:
         "post": cmd_post,
         "report": cmd_report,
         "set-affiliate": cmd_set_affiliate,
+        "affiliate-tags": cmd_affiliate_tags,
         "check-affiliate": cmd_check_affiliate,
     }
     try:

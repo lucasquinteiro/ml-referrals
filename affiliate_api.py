@@ -158,6 +158,32 @@ class AffiliateLinkBuilder:
         except Exception:  # noqa: BLE001
             pass
 
+    def list_tags(self) -> list[dict[str, Any]]:
+        """The affiliate tags on this account, newest first.
+
+        An account can hold several — typically the auto-generated one named
+        after the nickname, plus any you created. Only one is `in_use`. Read
+        from the link builder page's own embedded state; there's no tags
+        endpoint (the obvious paths 404).
+        """
+        import json
+        import re
+
+        assert self._page is not None, "use as a context manager"
+        html = self._page.content()
+        m = re.search(r'"tags"\s*:\s*(\[[^\]]*\])', html)
+        if not m:
+            return []
+        try:
+            tags = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            return []
+        return sorted(
+            [t for t in tags if isinstance(t, dict) and t.get("tag")],
+            key=lambda t: t.get("generated_date", ""),
+            reverse=True,
+        )
+
     def create(self, urls: list[str]) -> dict[str, dict[str, str]]:
         """Generate links for `urls`. Returns {input_url: {"short", "full"}}.
 
