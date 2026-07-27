@@ -13,7 +13,9 @@ keywords (config.json)
    ./run ingest ──► scrape ──► match titles ──► snapshot prices
                                                 │
                                                 ▼
-   ./run offers ──► filter by discount ──► affiliate link ──► tweet
+   ./run simulate ──► filter by discount ──► affiliate link ──► preview
+                                                │
+   ./run post ──────────────────────────────────┴──► 1 tweet
 ```
 
 ## Why it scrapes `/ofertas` and not search
@@ -92,16 +94,45 @@ automatically, so you may not need to set anything.
 
 ## Usage
 
-The everyday loop is two commands — **scrape**, then **turn it into tweets**:
+The everyday loop is three commands — **scrape**, **check**, **publish**:
 
 ```bash
-./run ingest                    # scrape + record price snapshots
-./run offers                    # find offers, render the tweet for each
-./run offers --post --limit 1   # publish one
+./run ingest      # scrape + record price snapshots
+./run simulate    # exactly what the next post would publish — writes nothing
+./run post        # publish that one tweet
 ```
 
-`./run offers` reads the stored data — it never scrapes. If the data is older
-than `max_data_age_hours` (default 12) it stops and tells you to run `./run
+`simulate` is the dry run: it renders the single tweet that `post` would send,
+then lists what's queued behind it, and touches nothing.
+
+```
+─── WOULD POST NEXT · 72% OFF · Monitores · 179/280 chars
+💥 Monitor Led 27 Oasis 75hz Full Hd 1920x1080 Hdmi/vga Negro
+
+🏷️ Antes $600.000
+🔥 Ahora $169.900 (72% OFF)
+💰 Ahorro: $430.100
+
+https://www.mercadolibre.com.ar/monitor-led-27-...
+
+#Ofertas · Link de afiliado
+
+  then, on the following runs (295 more queued):
+    2. 71% off — Cafetera Express 033 Dyvan Espumador 20 Bar (Cafeteras)
+    3. 70% off — Auriculares Inalámbricos FETUZZ de Oído Abierto (Auriculares)
+
+  ✓ simulation only — nothing posted, nothing written to the store
+```
+
+**Posting is always one tweet per run.** There's no `--limit` on `post`: a burst
+of affiliate links reads as spam, and one at a time keeps every publish
+reviewable. Run it again for the next one — the queue is ordered by discount,
+and anything already posted is held back for `repost_cooldown_days`.
+
+To see more of the queue than `simulate` shows, use `./run offers --limit 20`.
+
+These commands read the stored data — they never scrape. If the data is older
+than `max_data_age_hours` (default 12) they stop and tell you to run `./run
 ingest`, because a tweet built from an expired price is worse than no tweet:
 
 ```
@@ -122,16 +153,18 @@ Everything else:
 ```bash
 ./run login                     # optional: unlock search scraping
 ./run ingest --dry-run          # scrape + match, write nothing
+./run offers --limit 20         # browse the whole queue
 ./run db --name offers          # query the store (see below)
 ./run report                    # summary of what's in the store
 ./run check-affiliate <url>     # verify your affiliate link shape
-./run post --limit 1            # older direct path: pick + tweet in one go
+./run post --ingest             # scrape fresh, then post from that
 ```
 
 Useful flags: `ingest --pages N`, `ingest --headed` (watch the browser),
 `ingest --keyword notebook` (override config), `ingest --source search` (needs
 login), `ingest --all` (snapshot every scraped product, not just keyword
-matches), `offers --limit N`, `offers --stale-ok`.
+matches), `simulate --queue 10`, and `--stale-ok` / `--max-age-hours` /
+`--llm` on all three of `simulate`, `offers` and `post`.
 
 ## Querying the database
 

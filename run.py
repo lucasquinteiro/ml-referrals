@@ -2,29 +2,34 @@
 """
 ml-referrals — main entrypoint.
 
-Two steps: scrape, then turn what was scraped into tweets.
+Three steps: scrape, check what would go out, publish it.
 
     ./run ingest            scrape MercadoLibre, match against the keywords in
                             config.json, snapshot every price
-    ./run offers            find the offers in that data and render the tweet
-                            for each one (preview by default, --post to send)
+    ./run simulate          show exactly what the next post would publish —
+                            writes nothing, posts nothing
+    ./run post              publish that one tweet
 
+    ./run offers            browse the whole queue, not just the next one
     ./run db                query the store
     ./run report            summary of what's in the store
     ./run login             save a session, unlocking --source search
-    ./run post              older direct path: pick + tweet in one go
 
 Typical local test drive:
 
     ./run ingest                    # scrape + record price snapshots
-    ./run offers                    # see the tweets (deterministic copy)
-    ./run offers --post --limit 1   # actually publish one
+    ./run simulate                  # exactly what would be posted
+    ./run post                      # publish it
 
     ./run db --name offers          # best current discounts
     ./run check-affiliate <url>     # sanity-check your affiliate link shape
 
-`offers` refuses to run on data older than config.max_data_age_hours, since a
-tweet built from an expired price is worse than no tweet.
+Posting is always ONE tweet per run. A burst of affiliate links reads as spam,
+and one at a time keeps every publish reviewable.
+
+`simulate`, `offers` and `post` all refuse to run on data older than
+config.max_data_age_hours: a tweet built from an expired price is worse than
+no tweet.
 
 In GitHub Actions, `ingest` runs on a schedule and `post` a couple of times a
 day — see .github/workflows/.
@@ -63,20 +68,30 @@ def _parse_args() -> argparse.Namespace:
 
     sub.add_parser("login", help="Log in to Mercado Libre once and save the session")
 
+    def _freshness_flags(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--max-age-hours", type=float, default=None,
+                       help="Refuse to run if the data is older than this "
+                            "(default: config.max_data_age_hours)")
+        p.add_argument("--stale-ok", action="store_true",
+                       help="Use the stored data even if it's stale")
+        p.add_argument("--llm", action="store_true",
+                       help="Generate copy with the LLM instead of the "
+                            "deterministic templates")
+
+    sim = sub.add_parser(
+        "simulate",
+        help="Show exactly what the next `post` would publish, without posting",
+    )
+    sim.add_argument("--queue", type=int, default=5,
+                     help="How many upcoming offers to list after it (default 5)")
+    _freshness_flags(sim)
+
     ofr = sub.add_parser(
         "offers",
-        help="Find offers in the scraped data and show the tweets for them",
+        help="Browse the offer queue and the tweet each one would produce",
     )
     ofr.add_argument("--limit", type=int, default=10, help="How many offers to show")
-    ofr.add_argument("--max-age-hours", type=float, default=None,
-                     help="Refuse to run if the data is older than this "
-                          "(default: config.max_data_age_hours)")
-    ofr.add_argument("--stale-ok", action="store_true",
-                     help="Use the stored data even if it's stale")
-    ofr.add_argument("--llm", action="store_true",
-                     help="Generate copy with the LLM instead of the deterministic templates")
-    ofr.add_argument("--post", action="store_true",
-                     help="Actually publish the tweets shown (default is preview only)")
+    _freshness_flags(ofr)
 
     db = sub.add_parser("db", help="Run a read-only SQL query against the store")
     db.add_argument("sql", nargs="?", default=None,
@@ -84,14 +99,16 @@ def _parse_args() -> argparse.Namespace:
     db.add_argument("--name", default=None, help="Run a built-in named query")
     db.add_argument("--csv", action="store_true", help="Output CSV instead of a table")
 
-    po = sub.add_parser("post", help="Tweet the best offers found so far")
-    po.add_argument("--limit", type=int, default=None,
-                    help="How many tweets to send (default: config.tweets_per_run)")
+    po = sub.add_parser(
+        "post",
+        help="Publish exactly one tweet: the best offer in the queue",
+    )
     po.add_argument("--dry-run", action="store_true",
-                    help="Print the tweets instead of posting them")
+                    help="Print the tweet instead of posting it (same as `simulate`)")
     po.add_argument("--ingest", action="store_true",
                     help="Scrape first, then post from those fresh results")
     po.add_argument("--pages", type=int, default=None, help="Pages to crawl with --ingest")
+    _freshness_flags(po)
 
     rep = sub.add_parser("report", help="Show what's in the store")
     rep.add_argument("--limit", type=int, default=15)
@@ -228,12 +245,51 @@ def _require_fresh_data(store: Any, settings: Any, args: argparse.Namespace) -> 
     return None
 
 
-def cmd_offers(args: argparse.Namespace, settings: Any) -> int:
-    """Find offers in the already-scraped data and render their tweets."""
-    from affiliate import AffiliateError, build_link_from_settings
-    from lib.log import log_ok, log_stage, log_step, log_warn
+def _select_deals(store: Any, settings: Any) -> list[Any]:
+    """The postable queue: keyword-matched, threshold-clearing, off cooldown.
+
+    Ordered best-discount-first, so the head of this list is always the next
+    thing that would go out.
+    """
     import offers as off
+
+    stored = store.latest_matched_products()
+    matched = off.match_products(stored, off.load_keywords(settings), settings)
+    cooldown = store.recently_posted(settings.repost_cooldown_days)
+    return off.filter_offers(matched, settings, exclude_ids=cooldown)
+
+
+def _render(product: Any, settings: Any, *, use_llm: bool, allow_untagged: bool):
+    """Build (link, text) for one product. Returns None when the affiliate tag
+    is missing and untagged links aren't acceptable."""
+    from affiliate import AffiliateError, build_link_from_settings
+    from lib.log import log_err, log_warn
     import tweets as tw
+
+    try:
+        link = build_link_from_settings(product.url, settings)
+    except AffiliateError as e:
+        if not allow_untagged:
+            log_err(str(e))
+            return None
+        log_warn(f"{e}\n  Simulating with an untagged link.")
+        link = product.url
+    return link, tw.build_tweet(product, link, settings, deterministic=not use_llm)
+
+
+def _show(product: Any, link: str, text: str, header: str) -> None:
+    import tweets as tw
+
+    print()
+    print(f"\033[1m─── {header} · {product.discount_pct}% OFF · "
+          f"{product.matched_label} · "
+          f"{tw.tweet_length(text, link)}/{tw.TWEET_LIMIT} chars\033[0m")
+    print(text)
+
+
+def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
+    """Show exactly what the next `./run post` would publish. Writes nothing."""
+    from lib.log import log_ok, log_stage, log_step, log_warn
 
     store = _get_store(settings)
     try:
@@ -242,76 +298,69 @@ def cmd_offers(args: argparse.Namespace, settings: Any) -> int:
         if bail is not None:
             return bail
 
-        stored = store.latest_matched_products()
-        matched = off.match_products(stored, off.load_keywords(settings), settings)
-        cooldown = store.recently_posted(settings.repost_cooldown_days)
-        deals = off.filter_offers(matched, settings, exclude_ids=cooldown)
-
-        log_stage(f"{len(deals)} offer(s) worth posting")
+        deals = _select_deals(store, settings)
         if not deals:
             log_warn("Nothing cleared the thresholds. Lower min_discount_pct in "
                      "config.json, widen the keywords, or run ./run ingest again.")
             return 0
 
-        untagged = False
-        rendered: list[tuple[Any, str, str]] = []
-        for product in deals[: args.limit]:
-            try:
-                link = build_link_from_settings(product.url, settings)
-            except AffiliateError as e:
-                if args.post:
-                    log_err(str(e))
-                    return 1
-                if not untagged:
-                    log_warn(f"{e}\n  Previewing with untagged links.")
-                    untagged = True
-                link = product.url
-            text = tw.build_tweet(product, link, settings, deterministic=not args.llm)
-            rendered.append((product, link, text))
+        log_stage(f"{len(deals)} offer(s) in the queue")
 
-        for i, (product, link, text) in enumerate(rendered, 1):
+        rendered = _render(deals[0], settings, use_llm=args.llm, allow_untagged=True)
+        if rendered is None:
+            return 1
+        link, text = rendered
+        _show(deals[0], link, text, "WOULD POST NEXT")
+
+        # The rest of the queue, so it's clear what follows on later runs.
+        upcoming = deals[1 : 1 + args.queue]
+        if upcoming:
             print()
-            print(f"\033[1m─── {i}/{len(rendered)}  "
-                  f"{product.discount_pct}% OFF · {product.matched_label} · "
-                  f"{tw.tweet_length(text, link)}/{tw.TWEET_LIMIT} chars\033[0m")
-            print(text)
+            log_step(f"then, on the following runs ({len(deals) - 1} more queued):")
+            for i, p in enumerate(upcoming, 2):
+                log_step(f"  {i}. {p.discount_pct}% off — {p.title[:56]} "
+                         f"({p.matched_label})")
 
         print()
-        if not args.post:
-            log_ok(f"{len(rendered)} tweet(s) generated (preview only)")
-            log_step("Publish them with:  ./run offers --post --limit N")
-            return 0
-
-        return _publish(rendered, store, settings)
+        log_ok("simulation only — nothing posted, nothing written to the store")
+        log_step("Publish this one with:  ./run post")
+        return 0
     finally:
         store.close()
 
 
-def _publish(rendered: list[tuple[Any, str, str]], store: Any, settings: Any) -> int:
-    """Send already-rendered tweets, recording each one."""
-    from lib.log import log_err, log_ok, log_stage
-    from lib.twitter_post import TwitterPoster, TwitterPostError
+def cmd_offers(args: argparse.Namespace, settings: Any) -> int:
+    """Browse the offer queue and the tweet each one would produce."""
+    from lib.log import log_ok, log_stage, log_step, log_warn
 
-    log_stage(f"Posting {len(rendered)} tweet(s)")
-    poster = TwitterPoster(cache_dir=cfg.STATE_DIR, dry_run=False)
+    store = _get_store(settings)
+    try:
+        log_stage("Checking the scraped data")
+        bail = _require_fresh_data(store, settings, args)
+        if bail is not None:
+            return bail
 
-    for i, (product, link, text) in enumerate(rendered):
-        try:
-            tweet_id = poster.post(text)
-        except TwitterPostError as e:
-            log_err(f"post failed: {e}")
-            return 1
-        store.record_post(
-            product_id=product.product_id, tweet_id=tweet_id, tweet_text=text,
-            affiliate_url=link, price=product.price,
-            discount_pct=product.discount_pct, dry_run=False,
-        )
-        log_ok(f"posted https://x.com/i/status/{tweet_id}")
-        if i < len(rendered) - 1:
-            time.sleep(settings.delay_between_tweets_sec)
+        deals = _select_deals(store, settings)
+        log_stage(f"{len(deals)} offer(s) in the queue")
+        if not deals:
+            log_warn("Nothing cleared the thresholds. Lower min_discount_pct in "
+                     "config.json, widen the keywords, or run ./run ingest again.")
+            return 0
 
-    log_ok(f"{len(rendered)} tweet(s) posted")
-    return 0
+        shown = deals[: args.limit]
+        for i, product in enumerate(shown, 1):
+            rendered = _render(product, settings, use_llm=args.llm, allow_untagged=True)
+            if rendered is None:
+                return 1
+            link, text = rendered
+            _show(product, link, text, f"{i}/{len(shown)}")
+
+        print()
+        log_ok(f"{len(shown)} tweet(s) rendered (preview only)")
+        log_step("Post the top one with:  ./run post")
+        return 0
+    finally:
+        store.close()
 
 
 # Handy queries, so you don't have to remember the schema.
@@ -439,91 +488,64 @@ def cmd_db(args: argparse.Namespace, settings: Any) -> int:
 
 
 def cmd_post(args: argparse.Namespace, settings: Any) -> int:
-    from affiliate import AffiliateError, build_link_from_settings
+    """Publish exactly one tweet: the best offer currently in the queue.
+
+    One at a time, always. A burst of affiliate links reads as spam, and a
+    single post per run keeps every publish reviewable — run `./run simulate`
+    first to see precisely what this will send.
+    """
     from lib.log import log_err, log_ok, log_stage, log_step, log_warn
     from lib.twitter_post import TwitterPoster, TwitterPostError
-    import offers as off
-    import tweets as tw
 
-    limit = args.limit if args.limit is not None else settings.tweets_per_run
     store = _get_store(settings)
-
     try:
-        # Source of candidates: a fresh scrape, or the last one we stored.
         if args.ingest:
             pages = args.pages or settings.pages_per_run
             _, matched = _scrape_and_match(settings, pages=pages, headed=False)
-            if not args.dry_run:
-                run_id = store.start_run("post-ingest")
-                store.record_snapshots(matched, run_id)
+            run_id = store.start_run("post-ingest")
+            store.record_snapshots(matched, run_id)
         else:
-            stored = store.latest_matched_products()
-            if not stored:
-                log_err("Nothing recent in the store. Run `./run ingest` first, "
-                        "or use `./run post --ingest`.")
-                return 1
-            # Re-match against the *current* config so edits to keywords and
-            # their per-keyword thresholds take effect without re-scraping.
-            matched = off.match_products(stored, off.load_keywords(settings), settings)
-            log_step(f"{len(matched)} stored offer(s) still match the config")
+            log_stage("Checking the scraped data")
+            bail = _require_fresh_data(store, settings, args)
+            if bail is not None:
+                return bail
 
-        cooldown = store.recently_posted(settings.repost_cooldown_days)
-        deals = off.filter_offers(matched, settings, exclude_ids=cooldown)
-        log_stage(f"{len(deals)} postable offer(s); sending up to {limit}")
+        deals = _select_deals(store, settings)
+        log_stage(f"{len(deals)} offer(s) in the queue")
         if not deals:
             log_warn("No offer cleared the thresholds. Lower min_discount_pct in "
                      "config.json, or widen the keyword list.")
             return 0
 
-        poster = TwitterPoster(cache_dir=cfg.STATE_DIR, dry_run=args.dry_run)
+        product = deals[0]
+        rendered = _render(product, settings, use_llm=args.llm,
+                           allow_untagged=args.dry_run)
+        if rendered is None:
+            return 1
+        link, text = rendered
+        _show(product, link, text, "DRY RUN" if args.dry_run else "POSTING")
 
-        sent = 0
-        for product in deals:
-            if sent >= limit:
-                break
-            try:
-                link = build_link_from_settings(product.url, settings)
-            except AffiliateError as e:
-                # A real post without a tag is lost commission, so that stays
-                # fatal — but a dry run should still let you review the copy.
-                if not args.dry_run:
-                    log_err(str(e))
-                    return 1
-                if sent == 0:
-                    log_warn(f"{e}\n  Previewing with an untagged link.")
-                link = product.url
+        print()
+        try:
+            tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR,
+                                     dry_run=args.dry_run).post(text)
+        except TwitterPostError as e:
+            log_err(f"post failed: {e}")
+            return 1
 
-            text = tw.build_tweet(product, link, settings)
-            log_step(f"[{sent + 1}/{limit}] {product.discount_pct}% off — "
-                     f"{product.title[:50]} "
-                     f"({tw.tweet_length(text, link)}/{tw.TWEET_LIMIT} chars)")
-
-            try:
-                tweet_id = poster.post(text)
-            except TwitterPostError as e:
-                log_err(f"post failed: {e}")
-                return 1
-
-            store.record_post(
-                product_id=product.product_id,
-                tweet_id=tweet_id,
-                tweet_text=text,
-                affiliate_url=link,
-                price=product.price,
-                discount_pct=product.discount_pct,
-                dry_run=args.dry_run,
-            )
-            if tweet_id:
-                log_ok(f"posted https://x.com/i/status/{tweet_id}")
-            sent += 1
-
-            if sent < limit and not args.dry_run:
-                time.sleep(settings.delay_between_tweets_sec)
-
-        log_ok(f"{sent} tweet(s) {'previewed' if args.dry_run else 'posted'}")
+        store.record_post(
+            product_id=product.product_id, tweet_id=tweet_id, tweet_text=text,
+            affiliate_url=link, price=product.price,
+            discount_pct=product.discount_pct, dry_run=args.dry_run,
+        )
+        if tweet_id:
+            log_ok(f"posted https://x.com/i/status/{tweet_id}")
+            log_step(f"{len(deals) - 1} offer(s) still queued for the next run")
+        else:
+            log_ok("dry run — nothing published")
+        return 0
     finally:
         store.close()
-    return 0
 
 
 def cmd_report(args: argparse.Namespace, settings: Any) -> int:
@@ -582,6 +604,7 @@ def main() -> int:
     handlers = {
         "login": cmd_login,
         "ingest": cmd_ingest,
+        "simulate": cmd_simulate,
         "offers": cmd_offers,
         "db": cmd_db,
         "post": cmd_post,

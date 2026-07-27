@@ -9,11 +9,8 @@ on:
     - cron: "30 21 * * *"   # 18:30 in Buenos Aires
   workflow_dispatch:
     inputs:
-      limit:
-        description: "How many tweets to send (blank = config.tweets_per_run)"
-        default: ""
       dry_run:
-        description: "Print the tweets instead of posting"
+        description: "Print the tweet instead of posting it"
         type: boolean
         default: false
       ingest:
@@ -57,9 +54,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -euo pipefail
+          # Always exactly one tweet per run — that's what `post` does.
           ARGS=""
-          LIMIT="${{ github.event.inputs.limit }}"
-          if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           if [ "${{ github.event.inputs.ingest }}" = "true" ]; then ARGS="$ARGS --ingest"; fi
           echo "Running: python run.py post $ARGS"

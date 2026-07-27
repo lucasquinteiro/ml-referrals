@@ -34,8 +34,6 @@
     "extra_params": { "forceInApp": "true" }
   },
 
-  "tweets_per_run": 2,
-  "delay_between_tweets_sec": 30,
   "use_llm_for_copy": true,
   "tweet_language": "es-AR",
   "tweet_hashtags": ["#Ofertas"],

@@ -116,10 +116,8 @@ _DEFAULTS: dict[str, Any] = {
     },
 
     # ---- posting ----------------------------------------------------------
-    # How many tweets to send per `post` run.
-    "tweets_per_run": 2,
-    # Seconds to wait between tweets inside one run.
-    "delay_between_tweets_sec": 30,
+    # Posting is one tweet per run, always — a burst of affiliate links reads
+    # as spam, and one at a time keeps every publish reviewable.
     # Prefer the LLM for tweet copy; falls back to templates when no API key
     # is configured or the call fails.
     "use_llm_for_copy": True,
