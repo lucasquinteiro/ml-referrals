@@ -188,11 +188,14 @@ class MercadoLibreScraper:
         headless: bool = True,
         delay_sec: float = 2.5,
         timeout_ms: int = 60_000,
+        use_session: bool = True,
     ) -> None:
         self.site = site.rstrip("/")
         self.headless = headless
         self.delay_sec = delay_sec
         self.timeout_ms = timeout_ms
+        self.use_session = use_session
+        self.authenticated = False
         self._pw = None
         self._browser = None
         self._ctx = None
@@ -202,16 +205,23 @@ class MercadoLibreScraper:
     def __enter__(self) -> "MercadoLibreScraper":
         from playwright.sync_api import sync_playwright
 
+        import auth
+
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
             headless=self.headless,
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
         )
+        # Reuse a saved login when there is one — /ofertas doesn't need it, but
+        # search and product pages do. Anonymous is the default.
+        state = auth.storage_state_path() if self.use_session else None
         self._ctx = self._browser.new_context(
             locale="es-AR",
             user_agent=UA,
             viewport={"width": 1440, "height": 1000},
+            storage_state=str(state) if state else None,
         )
+        self.authenticated = bool(state)
         # Images/fonts/media are pure bandwidth here — the thumbnail URL is in
         # the DOM regardless of whether the bytes are fetched.
         self._ctx.route(
@@ -264,6 +274,60 @@ class MercadoLibreScraper:
             return products
         finally:
             pg.close()
+
+    # ---- search (needs a logged-in session) ------------------------------
+
+    def _search_url(self, term: str, page: int) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", term.lower().strip()).strip("-")
+        host = self.site.replace("://www.", "://listado.")
+        # ML pages search 50 at a time via a _Desde_ offset, 1-indexed.
+        if page <= 1:
+            return f"{host}/{slug}"
+        return f"{host}/{slug}_Desde_{(page - 1) * 50 + 1}_NoIndex_True"
+
+    def _scrape_search_page(self, term: str, page_no: int) -> list[Product]:
+        assert self._ctx is not None, "use the scraper as a context manager"
+        pg = self._ctx.new_page()
+        try:
+            url = self._search_url(term, page_no)
+            pg.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            try:
+                pg.wait_for_selector(
+                    "a.poly-component__title, .ui-search-item__title", timeout=25_000
+                )
+            except Exception:  # noqa: BLE001
+                if any(m in pg.url for m in _WALL_MARKERS):
+                    raise BlockedError(
+                        f"Search is behind the login wall (landed on {pg.url[:90]}). "
+                        "Run `./run login` to attach a session, or use the default "
+                        "--source ofertas, which needs no login."
+                    )
+                return []
+            raw = pg.evaluate(_EXTRACT_JS)
+            products = [p for p in (_to_product(r) for r in raw) if p]
+            log_step(f"'{term}' page {page_no}: {len(products)} products")
+            return products
+        finally:
+            pg.close()
+
+    def scrape_search(self, terms: list[str], pages: int = 2) -> list[Product]:
+        """Search each term directly. Requires a session — see auth.py."""
+        seen: dict[str, Product] = {}
+        for term in terms:
+            for n in range(1, pages + 1):
+                try:
+                    batch = self._scrape_search_page(term, n)
+                except BlockedError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    log_err(f"'{term}' page {n} failed: {type(e).__name__}: {e}")
+                    continue
+                if not batch:
+                    break
+                for p in batch:
+                    seen.setdefault(p.product_id, p)
+                time.sleep(self.delay_sec)
+        return list(seen.values())
 
     def scrape_offers(self, pages: int = 10) -> list[Product]:
         """Crawl `pages` pages of /ofertas, de-duplicated by product id."""

@@ -35,6 +35,36 @@ Pages are rendered in a real headless Chromium via Playwright, so the site's own
 JS runs exactly as it does for a normal visitor. Requests are spaced out by
 `delay_between_pages_sec`; please leave that at a polite value.
 
+### Optional: scraping search with a logged-in session
+
+`/ofertas` only shows what Mercado Libre itself flags as discounted. Search
+covers the **whole catalogue**, which is what you want for tracking specific
+products' prices over time and calling deals yourself. That needs a session:
+
+```bash
+./run login                              # opens a browser; you log in yourself
+./run ingest --source search --pages 2   # searches each configured keyword
+```
+
+`./run login` opens a real browser window and waits. You type your credentials
+into Mercado Libre's own page — nothing passes through this code, and it verifies
+the session works before saving it. Playwright then writes the cookies to
+`state/ml-storage.json` (gitignored). Re-run it when the session expires.
+
+Set `ML_STORAGE_STATE_PATH` to point at a session file somewhere else.
+
+> **Think about which account you use.** This drives an automated, logged-in
+> session against a wall Mercado Libre put up deliberately, so there's a real
+> chance of the account getting rate-limited or flagged. If that's the same
+> account your affiliate earnings are tied to, that's your business at risk —
+> prefer a separate account. Also note this doesn't transfer to GitHub Actions
+> cleanly: a datacenter IP plus a logged-in session is a much stronger bot
+> signal than your home connection, and a headless run can't answer a re-auth
+> or 2FA prompt. `/ofertas` needs none of this, which is why it's the default.
+
+Category pages (`/c/<category>`) are *not* a way around this — they're browse
+landing pages: no discount data, and `?page=2` returns the same items.
+
 ## Setup
 
 ```bash
@@ -63,6 +93,7 @@ automatically, so you may not need to set anything.
 ## Usage
 
 ```bash
+./run login                     # optional: unlock search scraping
 ./run ingest --dry-run          # scrape + match, write nothing
 ./run ingest                    # scrape + record price snapshots
 ./run post --dry-run            # show the tweets that would go out
@@ -72,7 +103,7 @@ automatically, so you may not need to set anything.
 ```
 
 Useful flags: `ingest --pages N`, `ingest --headed` (watch the browser),
-`ingest --keyword notebook` (override config), `ingest --all` (snapshot every
+`ingest --keyword notebook` (override config), `ingest --source search` (needs login), `ingest --all` (snapshot every
 scraped product, not just keyword matches), `post --ingest` (scrape fresh
 instead of using the last stored run).
 

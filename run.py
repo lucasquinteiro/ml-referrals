@@ -52,6 +52,10 @@ def _parse_args() -> argparse.Namespace:
                      help="Override config keywords (repeatable)")
     ing.add_argument("--all", action="store_true",
                      help="Snapshot every scraped product, not just keyword matches")
+    ing.add_argument("--source", choices=["ofertas", "search"], default="ofertas",
+                     help="ofertas (default, no login) or search (needs ./run login)")
+
+    sub.add_parser("login", help="Log in to Mercado Libre once and save the session")
 
     po = sub.add_parser("post", help="Tweet the best offers found so far")
     po.add_argument("--limit", type=int, default=None,
@@ -83,8 +87,11 @@ def _get_store(settings: Any):
     return Store(cfg.DB_PATH)
 
 
-def _scrape_and_match(settings: Any, *, pages: int, headed: bool, keyword_overrides=None):
+def _scrape_and_match(
+    settings: Any, *, pages: int, headed: bool, keyword_overrides=None, source: str = "ofertas"
+):
     """Shared by `ingest` and `post --ingest`. Returns (all_products, matched)."""
+    import auth
     from lib.log import log_ok, log_stage, log_step
     import offers as off
     from scraper import MercadoLibreScraper
@@ -94,13 +101,24 @@ def _scrape_and_match(settings: Any, *, pages: int, headed: bool, keyword_overri
     else:
         keywords = off.load_keywords(settings)
 
-    log_stage(f"Scraping {settings.site}/ofertas ({pages} pages)")
+    where = "/ofertas" if source == "ofertas" else "search"
+    log_stage(f"Scraping {settings.site} {where} ({pages} pages)")
     log_step(f"{len(keywords)} keyword(s): " + ", ".join(k.term for k in keywords))
+    log_step(f"session: {auth.describe_session()}")
+
+    if source == "search" and not auth.has_session():
+        raise SystemExit(
+            "Search needs a logged-in Mercado Libre session. Run `./run login` "
+            "first, or drop --source search to use /ofertas (no login needed)."
+        )
 
     with MercadoLibreScraper(
         settings.site, headless=not headed, delay_sec=settings.delay_between_pages_sec
     ) as scraper:
-        products = scraper.scrape_offers(pages=pages)
+        if source == "search":
+            products = scraper.scrape_search([k.term for k in keywords], pages=pages)
+        else:
+            products = scraper.scrape_offers(pages=pages)
 
     log_ok(f"scraped {len(products)} products")
     if len(products) < settings.min_products_expected:
@@ -127,7 +145,8 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
 
     pages = args.pages or settings.pages_per_run
     products, matched = _scrape_and_match(
-        settings, pages=pages, headed=args.headed, keyword_overrides=args.keyword
+        settings, pages=pages, headed=args.headed,
+        keyword_overrides=args.keyword, source=args.source,
     )
 
     deals = off.filter_offers(matched, settings)
@@ -282,12 +301,19 @@ def cmd_check_affiliate(args: argparse.Namespace, settings: Any) -> int:
     return 0
 
 
+def cmd_login(args: argparse.Namespace, settings: Any) -> int:
+    import auth
+
+    return auth.login(settings.site)
+
+
 def main() -> int:
     args = _parse_args()
     cfg.bootstrap()
     settings = cfg.load_settings()
 
     handlers = {
+        "login": cmd_login,
         "ingest": cmd_ingest,
         "post": cmd_post,
         "report": cmd_report,
