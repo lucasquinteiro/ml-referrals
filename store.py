@@ -163,6 +163,25 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def last_snapshot_at(self) -> Optional[datetime]:
+        """When the most recent price snapshot was taken, or None if empty."""
+        row = self.conn.execute("SELECT MAX(observed_at) FROM price_history").fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return datetime.fromisoformat(row[0])
+        except ValueError:
+            return None
+
+    def data_age_hours(self) -> Optional[float]:
+        """Hours since the last snapshot; None when nothing has been scraped."""
+        last = self.last_snapshot_at()
+        if last is None:
+            return None
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last).total_seconds() / 3600
+
     def latest_matched_products(self, max_age_hours: int = 48) -> list[Any]:
         """Rebuild Product objects from the most recent snapshot of each product.
 

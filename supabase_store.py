@@ -118,6 +118,29 @@ class SupabaseStore:
         )
         return res.data or []
 
+    def last_snapshot_at(self) -> Optional[datetime]:
+        rows = (
+            self.sb.table("mlr_price_history")
+            .select("observed_at")
+            .order("observed_at", desc=True)
+            .limit(1)
+            .execute()
+        ).data or []
+        if not rows:
+            return None
+        try:
+            return datetime.fromisoformat(rows[0]["observed_at"].replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def data_age_hours(self) -> Optional[float]:
+        last = self.last_snapshot_at()
+        if last is None:
+            return None
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last).total_seconds() / 3600
+
     def latest_matched_products(self, max_age_hours: int = 48) -> list[Any]:
         """Most recent snapshot per keyword-matched product, as Product objects."""
         from scraper import Product

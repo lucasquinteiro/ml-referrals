@@ -11,7 +11,7 @@ length, so the affiliate URL is budgeted at 23 and the body is trimmed to fit.
 
 from __future__ import annotations
 
-import random
+import hashlib
 from typing import Any, Optional
 
 from lib.log import log_warn
@@ -21,10 +21,10 @@ TWEET_LIMIT = 280
 LINK_WEIGHT = 23  # X's t.co length, counted for any URL
 
 _TEMPLATES = [
-    "🔥 {title}\n\n{discount}% OFF — de {was} a {now}\n{link}",
-    "💸 {label} en oferta\n\n{title}\n{was} → {now} ({discount}% OFF)\n{link}",
-    "⚡ Bajó {discount}%: {title}\n\nAhora {now} (antes {was})\n{link}",
-    "🛒 {title}\n\nQuedó en {now}, {discount}% menos que {was}\n{link}",
+    "🔥 {discount}% OFF en {label}\n\n{title}\n\n❌ {was}\n✅ {now}\n💰 Ahorrás {saved}\n\n{link}",
+    "⚡ BAJÓ {discount}%\n\n{title}\n\n💸 {was} → {now}\n🤑 Te ahorrás {saved}\n\n{link}",
+    "🚨 Alerta de precio: {label}\n\n{title}\n\n📉 {discount}% OFF — de {was} a {now}\n💵 {saved} menos\n\n{link}",
+    "💥 {title}\n\n🏷️ Antes {was}\n🔥 Ahora {now} ({discount}% OFF)\n💰 Ahorro: {saved}\n\n{link}",
 ]
 
 _SYSTEM = (
@@ -80,11 +80,16 @@ def tweet_length(text: str, link: str) -> int:
 
 def render_template(product: Product, link: str, settings: Any) -> str:
     tail = _tail(settings)
-    template = random.choice(_TEMPLATES)
+    # Template picked from the product id, not at random: the same product always
+    # renders the same tweet, so runs are reproducible and reviewable — while
+    # different products still vary the format across the timeline.
+    idx = int(hashlib.md5(product.product_id.encode()).hexdigest(), 16) % len(_TEMPLATES)
+    template = _TEMPLATES[idx]
     fields = {
         "discount": product.discount_pct or 0,
         "was": _fmt_price(product.original_price, product.currency),
         "now": _fmt_price(product.price, product.currency),
+        "saved": _fmt_price(product.savings, product.currency),
         "label": product.matched_label or "Oferta",
     }
 
@@ -150,9 +155,14 @@ def generate_with_llm(product: Product, link: str, settings: Any) -> Optional[st
     return _assemble(text, link, tail)
 
 
-def build_tweet(product: Product, link: str, settings: Any) -> str:
-    """LLM copy when configured, template otherwise. Always fits in 280."""
-    if settings.use_llm_for_copy:
+def build_tweet(product: Product, link: str, settings: Any, *, deterministic: bool = False) -> str:
+    """LLM copy when configured, template otherwise. Always fits in 280.
+
+    `deterministic=True` forces the template path, so the same product always
+    produces byte-identical copy — an LLM can't promise that even at
+    temperature 0.
+    """
+    if settings.use_llm_for_copy and not deterministic:
         text = generate_with_llm(product, link, settings)
         if text:
             return text

@@ -10,10 +10,10 @@ the one file you edit day to day.
 keywords (config.json)
         │
         ▼
-   scrape /ofertas ──► match titles ──► filter by discount ──► snapshot prices
+   ./run ingest ──► scrape ──► match titles ──► snapshot prices
                                                 │
                                                 ▼
-                                       affiliate link ──► tweet
+   ./run offers ──► filter by discount ──► affiliate link ──► tweet
 ```
 
 ## Why it scrapes `/ofertas` and not search
@@ -92,20 +92,78 @@ automatically, so you may not need to set anything.
 
 ## Usage
 
+The everyday loop is two commands — **scrape**, then **turn it into tweets**:
+
+```bash
+./run ingest                    # scrape + record price snapshots
+./run offers                    # find offers, render the tweet for each
+./run offers --post --limit 1   # publish one
+```
+
+`./run offers` reads the stored data — it never scrapes. If the data is older
+than `max_data_age_hours` (default 12) it stops and tells you to run `./run
+ingest`, because a tweet built from an expired price is worse than no tweet:
+
+```
+✗ Scraped data is 19.4h old (limit 12h) — prices have probably moved
+  and some offers will have expired.
+  Refresh it with:
+      ./run ingest
+  ...or pass --stale-ok to use it anyway.
+```
+
+**Copy is deterministic.** The template is chosen from a hash of the product id,
+so the same product always renders byte-identical text — re-run it as often as
+you like and review before publishing. Pass `--llm` for LLM-written copy
+instead (varied, but not reproducible).
+
+Everything else:
+
 ```bash
 ./run login                     # optional: unlock search scraping
 ./run ingest --dry-run          # scrape + match, write nothing
-./run ingest                    # scrape + record price snapshots
-./run post --dry-run            # show the tweets that would go out
-./run post --limit 1            # actually tweet one
-./run report                    # what's in the store
+./run db --name offers          # query the store (see below)
+./run report                    # summary of what's in the store
 ./run check-affiliate <url>     # verify your affiliate link shape
+./run post --limit 1            # older direct path: pick + tweet in one go
 ```
 
 Useful flags: `ingest --pages N`, `ingest --headed` (watch the browser),
-`ingest --keyword notebook` (override config), `ingest --source search` (needs login), `ingest --all` (snapshot every
-scraped product, not just keyword matches), `post --ingest` (scrape fresh
-instead of using the last stored run).
+`ingest --keyword notebook` (override config), `ingest --source search` (needs
+login), `ingest --all` (snapshot every scraped product, not just keyword
+matches), `offers --limit N`, `offers --stale-ok`.
+
+## Querying the database
+
+`./run db` opens the SQLite store **read-only**, so a typo can't damage your
+price history. With no arguments it lists the built-in queries:
+
+```bash
+./run db                        # list the named queries
+./run db --name offers          # best current discounts
+./run db --name movers          # products whose price actually changed
+./run db --name history         # full price history, newest first
+./run db --name categories      # how many products matched each keyword
+./run db --name posted          # tweets already sent
+./run db --name runs            # ingest runs
+./run db --name stale           # how old the data is
+```
+
+Any SQL works too, and `--csv` makes it pipeable:
+
+```bash
+./run db "SELECT title, price FROM products p
+          JOIN price_history h USING (product_id) ORDER BY h.price DESC LIMIT 10"
+
+./run db --name history --csv > history.csv
+```
+
+Tables are `products`, `price_history`, `posts` and `runs` — schema in
+[`store.py`](store.py). Or use `sqlite3` directly:
+
+```bash
+sqlite3 state/ml_referrals.db "SELECT COUNT(*) FROM price_history"
+```
 
 ## Configuring what to look for
 

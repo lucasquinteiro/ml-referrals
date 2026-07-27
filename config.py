@@ -100,6 +100,9 @@ _DEFAULTS: dict[str, Any] = {
     "min_rating": 0.0,
     # Don't re-post the same product within this many days.
     "repost_cooldown_days": 21,
+    # `./run offers` refuses to build tweets from data older than this, since
+    # prices move and offers expire. Override per-run with --max-age-hours.
+    "max_data_age_hours": 12,
 
     # ---- affiliate --------------------------------------------------------
     # Your affiliate tag + tool id from the Mercado Libre affiliate dashboard

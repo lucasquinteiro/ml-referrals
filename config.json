@@ -26,6 +26,7 @@
   "max_price": 0,
   "min_rating": 0.0,
   "repost_cooldown_days": 21,
+  "max_data_age_hours": 12,
 
   "affiliate": {
     "tag": "",
