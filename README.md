@@ -226,7 +226,8 @@ Matching is accent- and case-insensitive, so `"television"` matches *"Televisió
 
 Other settings worth knowing: `min_discount_pct` (global floor),
 `repost_cooldown_days` (don't re-post the same product for N days),
-`tweets_per_run`, `pages_per_run`, `use_llm_for_copy`, `tweet_disclosure`.
+`max_data_age_hours` (staleness limit for `simulate`/`offers`/`post`),
+`pages_per_run`, `use_llm_for_copy`, `tweet_disclosure`.
 
 ## Price history
 
