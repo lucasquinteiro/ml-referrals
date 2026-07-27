@@ -1,0 +1,53 @@
+name: ingest
+
+# Scrape MercadoLibre offers and snapshot prices. Runs more often than posting
+# so the price history has real resolution.
+#
+# Requires config.json "store": "supabase" — a GitHub runner is ephemeral, so a
+# SQLite file under state/ would be thrown away after every run.
+on:
+  schedule:
+    - cron: "0 11,15,19,23 * * *"   # UTC (08/12/16/20 in Buenos Aires)
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: "Pages of /ofertas to crawl (blank = config.pages_per_run)"
+        default: ""
+      dry_run:
+        description: "Scrape and match, but write nothing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ml-referrals-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Ingest
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          ARGS=""
+          PAGES="${{ github.event.inputs.pages }}"
+          if [ -n "$PAGES" ]; then ARGS="$ARGS --pages $PAGES"; fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          echo "Running: python run.py ingest $ARGS"
+          python run.py ingest $ARGS

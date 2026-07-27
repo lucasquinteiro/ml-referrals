@@ -1,0 +1,201 @@
+"""
+Bootstrap + configuration for the ml-referrals project.
+
+Self-contained project: own virtualenv, own lib/. Mirrors the layout of the
+twitter-updates project so the two feel the same to operate.
+
+Credentials are resolved from the environment. `bootstrap()` loads them from
+(in order, without overriding anything already set):
+  1. the real process environment   (GitHub Actions secrets, your shell)
+  2. <project>/.env                  (local development)
+  3. <ai>/twitter-updates/.env       (optional local convenience fallback)
+
+load_dotenv(override=False) never clobbers existing vars, so real env vars
+(CI secrets) always win, then the local .env, then twitter-updates'.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+PROJECT_DIR = Path(__file__).resolve().parent
+AI_ROOT = PROJECT_DIR.parent
+
+# Local state (gitignored): SQLite price history + Playwright browser profile.
+STATE_DIR = PROJECT_DIR / "state"
+DB_PATH = STATE_DIR / "ml_referrals.db"
+BROWSER_PROFILE_DIR = STATE_DIR / "browser-profile"
+
+ENV_FILE = PROJECT_DIR / ".env"
+TWITTER_UPDATES_ENV_FILE = AI_ROOT / "twitter-updates" / ".env"
+
+CONFIG_JSON = PROJECT_DIR / "config.json"
+
+_BOOTSTRAPPED = False
+
+
+def bootstrap() -> None:
+    """Load env vars and ensure the state dir exists. Idempotent."""
+    global _BOOTSTRAPPED
+    if _BOOTSTRAPPED:
+        return
+
+    try:
+        from dotenv import load_dotenv
+
+        if ENV_FILE.is_file():
+            load_dotenv(ENV_FILE, override=False)
+        if TWITTER_UPDATES_ENV_FILE.is_file():
+            load_dotenv(TWITTER_UPDATES_ENV_FILE, override=False)
+    except ImportError:
+        pass
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _BOOTSTRAPPED = True
+
+
+# --------------------------------------------------------------------------
+# Settings (config.json overrides these defaults)
+# --------------------------------------------------------------------------
+
+_DEFAULTS: dict[str, Any] = {
+    # ---- what to look for -------------------------------------------------
+    # The keyword list that drives everything. A product is a candidate when
+    # its title matches one of these (see `keyword_match_mode`).
+    # Each entry is either a plain string or an object:
+    #   {"term": "notebook", "label": "Notebooks",
+    #    "exclude": ["funda", "cargador"], "min_discount_pct": 25}
+    "keywords": [],
+    # "any_word"  -> every word of the term must appear somewhere in the title
+    # "phrase"    -> the term must appear as a contiguous substring
+    "keyword_match_mode": "any_word",
+    # Words that disqualify a product no matter which keyword matched.
+    # Useful to filter accessories out of "notebook", "iphone", etc.
+    "global_exclude": ["funda", "case ", "protector", "repuesto", "replica"],
+
+    # ---- site -------------------------------------------------------------
+    # Which MercadoLibre site to crawl. The /ofertas page of this host is the
+    # source: it is publicly readable, unlike /listado search which now sits
+    # behind a login wall.
+    "site": "https://www.mercadolibre.com.ar",
+    # How many /ofertas pages to crawl per run (~45 products per page).
+    "pages_per_run": 12,
+    # Seconds to wait between page loads. Be polite — this is someone's site.
+    "delay_between_pages_sec": 2.5,
+    # Fail the run if fewer than this many products were scraped (catches the
+    # case where MercadoLibre changed their markup and every selector broke).
+    "min_products_expected": 20,
+
+    # ---- what counts as an offer worth posting ----------------------------
+    # Minimum discount MercadoLibre itself advertises on the card.
+    "min_discount_pct": 20,
+    # Price band, in ARS. 0 = no bound.
+    "min_price": 0,
+    "max_price": 0,
+    # Skip items with a seller rating below this (0 = don't care). Cards
+    # without any rating are kept.
+    "min_rating": 0.0,
+    # Don't re-post the same product within this many days.
+    "repost_cooldown_days": 21,
+
+    # ---- affiliate --------------------------------------------------------
+    # Your affiliate tag + tool id from the Mercado Libre affiliate dashboard
+    # (Programa de Afiliados). Both also readable from env as
+    # ML_AFFILIATE_TAG / ML_AFFILIATE_TOOL_ID, which win over these.
+    "affiliate": {
+        "tag": "",
+        "tool_id": "",
+        # Extra query params appended to every affiliate link.
+        "extra_params": {"forceInApp": "true"},
+    },
+
+    # ---- posting ----------------------------------------------------------
+    # How many tweets to send per `post` run.
+    "tweets_per_run": 2,
+    # Seconds to wait between tweets inside one run.
+    "delay_between_tweets_sec": 30,
+    # Prefer the LLM for tweet copy; falls back to templates when no API key
+    # is configured or the call fails.
+    "use_llm_for_copy": True,
+    "tweet_language": "es-AR",
+    # Appended to every tweet (kept short — links eat 23 chars).
+    "tweet_hashtags": ["#Ofertas"],
+    # Affiliate-disclosure suffix. Required by most jurisdictions and by X's
+    # own rules for paid/affiliate links. Empty string disables it.
+    "tweet_disclosure": "Link de afiliado",
+
+    # ---- storage ----------------------------------------------------------
+    # "sqlite"   -> state/ml_referrals.db (local, gitignored)
+    # "supabase" -> shared Postgres, needed once this runs in GitHub Actions
+    "store": "sqlite",
+
+    # ---- LLM (same providers as twitter-updates) --------------------------
+    "llm": {
+        "provider": "groq",
+        "model": "llama-3.3-70b-versatile",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+    },
+    "llm_fallback": {
+        "model": "llama-3.1-8b-instant",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+    },
+}
+
+
+class Settings:
+    def __init__(self, data: dict[str, Any]):
+        self._d = data
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self._d[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def get(self, name: str, default: Any = None) -> Any:
+        return self._d.get(name, default)
+
+    # ---- affiliate credentials (env wins over config.json) ---------------
+
+    @property
+    def affiliate_tag(self) -> str:
+        return (os.getenv("ML_AFFILIATE_TAG") or self.affiliate.get("tag") or "").strip()
+
+    @property
+    def affiliate_tool_id(self) -> str:
+        return (
+            os.getenv("ML_AFFILIATE_TOOL_ID") or self.affiliate.get("tool_id") or ""
+        ).strip()
+
+    # ---- LLM credentials -------------------------------------------------
+
+    @property
+    def llm_api_key(self) -> str | None:
+        return os.getenv(self.llm.get("api_key_env", "GROQ_API_KEY"))
+
+    @property
+    def llm_fallback_api_key(self) -> str | None:
+        fb = self._d.get("llm_fallback") or {}
+        env = fb.get("api_key_env")
+        return os.getenv(env) if env else None
+
+    def as_dict(self) -> dict[str, Any]:
+        return dict(self._d)
+
+
+def load_settings() -> Settings:
+    """Merge config.json over the built-in defaults (one level deep for dicts)."""
+    data = json.loads(json.dumps(_DEFAULTS))  # deep copy
+    if CONFIG_JSON.is_file():
+        user = json.loads(CONFIG_JSON.read_text(encoding="utf-8"))
+        for k, v in user.items():
+            if isinstance(v, dict) and isinstance(data.get(k), dict):
+                data[k].update(v)
+            else:
+                data[k] = v
+    return Settings(data)

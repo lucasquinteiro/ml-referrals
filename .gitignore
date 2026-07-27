@@ -1,0 +1,16 @@
+# Virtualenv
+.venv/
+
+# Local run state (SQLite price history + Playwright browser profile)
+state/
+
+# Secrets — never commit
+.env
+twitter-cookies.json
+
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store

@@ -1,0 +1,66 @@
+name: post
+
+# Tweet the best offers a couple of times a day, off the most recent ingest.
+# Kept separate from ingest.yml so posting cadence and scraping cadence can be
+# tuned independently — and so a scraping hiccup never costs you a tweet slot.
+on:
+  schedule:
+    - cron: "30 13 * * *"   # 10:30 in Buenos Aires
+    - cron: "30 21 * * *"   # 18:30 in Buenos Aires
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many tweets to send (blank = config.tweets_per_run)"
+        default: ""
+      dry_run:
+        description: "Print the tweets instead of posting"
+        type: boolean
+        default: false
+      ingest:
+        description: "Scrape fresh offers first instead of using the stored ones"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ml-referrals-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          # Chromium is only needed when this run also scrapes.
+          if [ "${{ github.event.inputs.ingest }}" = "true" ]; then
+            python -m playwright install --with-deps chromium
+          fi
+
+      - name: Post
+        env:
+          ML_AFFILIATE_TAG: ${{ secrets.ML_AFFILIATE_TAG }}
+          ML_AFFILIATE_TOOL_ID: ${{ secrets.ML_AFFILIATE_TOOL_ID }}
+          TWITTER_AUTH_TOKEN: ${{ secrets.TWITTER_AUTH_TOKEN }}
+          TWITTER_CT0: ${{ secrets.TWITTER_CT0 }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          ARGS=""
+          LIMIT="${{ github.event.inputs.limit }}"
+          if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ "${{ github.event.inputs.ingest }}" = "true" ]; then ARGS="$ARGS --ingest"; fi
+          echo "Running: python run.py post $ARGS"
+          python run.py post $ARGS

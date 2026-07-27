@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Run run.py with this project's own virtualenv.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$HERE/.venv/bin/python"
+
+if [[ ! -x "$PY" ]]; then
+  echo "Virtualenv not found at $PY" >&2
+  echo "Create it once with:" >&2
+  echo "  python3 -m venv $HERE/.venv" >&2
+  echo "  $HERE/.venv/bin/pip install -r $HERE/requirements.txt" >&2
+  echo "  $HERE/.venv/bin/python -m playwright install chromium" >&2
+  exit 1
+fi
+
+cd "$HERE"
+exec "$PY" run.py "$@"

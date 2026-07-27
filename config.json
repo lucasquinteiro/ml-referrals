@@ -1,0 +1,56 @@
+{
+  "keywords": [
+    { "term": "notebook", "label": "Notebooks", "min_discount_pct": 25,
+      "exclude": ["soporte", "cooler", "mochila", "bolso", "teclado"] },
+    { "term": "monitor", "label": "Monitores", "min_discount_pct": 25,
+      "exclude": ["soporte", "brazo"] },
+    { "term": "iphone", "label": "iPhone", "min_discount_pct": 15 },
+    { "term": "samsung galaxy", "label": "Samsung Galaxy", "min_discount_pct": 20 },
+    { "term": "auriculares", "label": "Auriculares", "min_discount_pct": 30 },
+    { "term": "smart tv", "label": "Smart TV", "min_discount_pct": 25 },
+    { "term": "playstation", "label": "PlayStation", "min_discount_pct": 15 },
+    { "term": "zapatillas", "label": "Zapatillas", "min_discount_pct": 35,
+      "exclude": ["bebe", "bebé"] },
+    { "term": "cafetera", "label": "Cafeteras", "min_discount_pct": 30 },
+    { "term": "aire acondicionado", "label": "Aire acondicionado", "min_discount_pct": 20 }
+  ],
+  "keyword_match_mode": "any_word",
+  "global_exclude": ["funda", "case ", "protector", "repuesto", "replica", "réplica", "usado"],
+
+  "site": "https://www.mercadolibre.com.ar",
+  "pages_per_run": 12,
+  "delay_between_pages_sec": 2.5,
+
+  "min_discount_pct": 20,
+  "min_price": 0,
+  "max_price": 0,
+  "min_rating": 0.0,
+  "repost_cooldown_days": 21,
+
+  "affiliate": {
+    "tag": "",
+    "tool_id": "",
+    "extra_params": { "forceInApp": "true" }
+  },
+
+  "tweets_per_run": 2,
+  "delay_between_tweets_sec": 30,
+  "use_llm_for_copy": true,
+  "tweet_language": "es-AR",
+  "tweet_hashtags": ["#Ofertas"],
+  "tweet_disclosure": "Link de afiliado",
+
+  "store": "sqlite",
+
+  "llm": {
+    "provider": "groq",
+    "model": "llama-3.3-70b-versatile",
+    "base_url": "https://api.groq.com/openai/v1",
+    "api_key_env": "GROQ_API_KEY"
+  },
+  "llm_fallback": {
+    "model": "llama-3.1-8b-instant",
+    "base_url": "https://api.groq.com/openai/v1",
+    "api_key_env": "GROQ_API_KEY"
+  }
+}
