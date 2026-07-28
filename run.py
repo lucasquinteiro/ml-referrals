@@ -66,6 +66,8 @@ def _parse_args() -> argparse.Namespace:
                      help="Snapshot every scraped product, not just keyword matches")
     ing.add_argument("--source", choices=["ofertas", "search"], default="ofertas",
                      help="ofertas (default, no login) or search (needs ./run login)")
+    ing.add_argument("--no-slack", action="store_true",
+                     help="Skip the Slack summary even if SLACK_WEBHOOK_URL is set")
 
     lg = sub.add_parser(
         "login",
@@ -234,8 +236,20 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
         n = store.record_snapshots(to_store, run_id)
         store.finish_run(run_id, products_seen=len(products), offers_matched=len(matched))
         log_ok(f"recorded {n} snapshots (run #{run_id})")
+
+        # Queue depth reflects everything stored, not just this run's haul.
+        queue_total = len(_select_deals(store, settings))
     finally:
         store.close()
+
+    if not args.no_slack:
+        import notifier
+
+        notifier.notify(notifier.build_summary(
+            site=settings.site, source=args.source, pages=pages,
+            scraped=len(products), matched=len(matched), deals=deals,
+            queue_total=queue_total, per_label=off.summarize(matched),
+        ))
     return 0
 
 

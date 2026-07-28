@@ -53,3 +53,16 @@ create table if not exists mlr_runs (
     offers_matched integer default 0,
     note           text
 );
+
+-- Links minted by MercadoLibre's link builder. Cached because they're stable
+-- per (product, tag) and each one costs a round trip through a real browser.
+create table if not exists mlr_affiliate_links (
+    product_id  text primary key,
+    product_url text not null,
+    short_url   text,
+    full_url    text,
+    tag         text,
+    created_at  timestamptz not null default now()
+);
+create index if not exists idx_mlr_affiliate_links_tag
+    on mlr_affiliate_links (tag);

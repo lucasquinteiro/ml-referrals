@@ -1,13 +1,14 @@
 name: ingest
 
-# Scrape MercadoLibre offers and snapshot prices. Runs more often than posting
-# so the price history has real resolution.
+# Scrape MercadoLibre offers, snapshot prices, and post a summary to Slack.
+# Once a day: the offer catalogue doesn't churn fast enough to justify more,
+# and the price history only needs daily resolution to be useful.
 #
 # Requires config.json "store": "supabase" — a GitHub runner is ephemeral, so a
-# SQLite file under state/ would be thrown away after every run.
+# SQLite file under state/ would be discarded after every run.
 on:
   schedule:
-    - cron: "0 11,15,19,23 * * *"   # UTC (08/12/16/20 in Buenos Aires)
+    - cron: "0 11 * * *"   # 11:00 UTC = 08:00 in Buenos Aires
   workflow_dispatch:
     inputs:
       pages:
@@ -25,7 +26,7 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +44,9 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Optional: only needed for --source search. /ofertas needs no login.
+          ML_STORAGE_STATE: ${{ secrets.ML_STORAGE_STATE }}
         run: |
           set -euo pipefail
           ARGS=""

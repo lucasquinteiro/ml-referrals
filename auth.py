@@ -42,6 +42,14 @@ _ENV_VARS = {
     AFFILIATE: "ML_AFFILIATE_STORAGE_STATE_PATH",
 }
 
+# The session JSON itself, rather than a path — this is how a session reaches
+# GitHub Actions, where there's no browser to log in with. Paste the contents
+# of state/ml-session-<role>.json into the matching repository secret.
+_ENV_CONTENT_VARS = {
+    SCRAPING: "ML_STORAGE_STATE",
+    AFFILIATE: "ML_AFFILIATE_STORAGE_STATE",
+}
+
 # Written before the roles were split; still honoured for scraping so an
 # existing setup keeps working without a re-login.
 LEGACY_PATH = cfg.STATE_DIR / "ml-storage.json"
@@ -62,6 +70,20 @@ def storage_state_path(role: str = SCRAPING) -> Optional[Path]:
     if env:
         p = Path(env)
         return p if p.is_file() else None
+
+    # A session supplied as JSON (CI secret) is materialised to disk, since
+    # Playwright only accepts a file path.
+    blob = os.environ.get(_ENV_CONTENT_VARS.get(role, ""), "").strip()
+    if blob:
+        materialised = cfg.STATE_DIR / f"ml-session-{role}-env.json"
+        try:
+            json.loads(blob)  # fail fast on a mangled secret
+        except json.JSONDecodeError as e:
+            log_warn(f"{_ENV_CONTENT_VARS[role]} is not valid JSON ({e}); ignoring")
+            return None
+        cfg.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        materialised.write_text(blob, encoding="utf-8")
+        return materialised
 
     path = session_file(role)
     if path.is_file():

@@ -386,19 +386,35 @@ flags are re-added from X's own error response and retried once.
 
 ## GitHub Actions
 
-Two workflows, deliberately separate so scraping and posting cadence are
-independent:
+Two scheduled workflows, no server needed:
 
-- [`ingest.yml`](.github/workflows/ingest.yml) — 4×/day, builds price history.
-- [`post.yml`](.github/workflows/post.yml) — 2×/day, tweets from the latest ingest.
+| Workflow | Schedule | What it does |
+| --- | --- | --- |
+| [`ingest.yml`](.github/workflows/ingest.yml) | daily, 11:00 UTC | scrape, snapshot prices, Slack summary |
+| [`post.yml`](.github/workflows/post.yml) | hourly | publish exactly one tweet |
 
-Both also run via **workflow_dispatch** with dry-run inputs, which is the safest
-way to try them the first time.
+`post` always sends one tweet, so the cron is the rate limit.
 
-Before enabling: set `store` to `"supabase"` in `config.json`, and add these
-repository secrets — `ML_AFFILIATE_TAG`, `ML_AFFILIATE_TOOL_ID`,
-`TWITTER_AUTH_TOKEN`, `TWITTER_CT0`, `SUPABASE_URL`,
-`SUPABASE_SERVICE_ROLE_KEY`, and optionally `GROQ_API_KEY`.
+**Full setup — Supabase, every secret, Slack, and the first test run — is in
+[DEPLOY.md](DEPLOY.md).** The short version: set `"store": "supabase"`, apply
+[`supabase_schema.sql`](supabase_schema.sql), and add these repository secrets:
+
+```
+SUPABASE_URL  SUPABASE_SERVICE_ROLE_KEY
+ML_AFFILIATE_TAG  ML_AFFILIATE_TOOL_ID  ML_AFFILIATE_STORAGE_STATE
+TWITTER_AUTH_TOKEN  TWITTER_CT0
+SLACK_WEBHOOK_URL  GROQ_API_KEY            (both optional)
+```
+
+Run each workflow once by hand with `dry_run: true` before letting the
+schedules take over.
+
+## Slack notifications
+
+Every ingest posts a summary — scraped/matched/queue counts, a per-keyword
+breakdown, and the top deals — to `SLACK_WEBHOOK_URL`. Unset means no
+notification; a failed one is logged and never fails the run. Skip it locally
+with `./run ingest --no-slack`.
 
 ## Layout
 

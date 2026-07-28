@@ -1,23 +1,22 @@
 name: post
 
-# Tweet the best offers a couple of times a day, off the most recent ingest.
-# Kept separate from ingest.yml so posting cadence and scraping cadence can be
-# tuned independently — and so a scraping hiccup never costs you a tweet slot.
+# Publish one tweet per run, hourly. `post` always sends exactly one, so the
+# schedule is the rate limit: 24 tweets/day at this cadence.
+#
+# Reads whatever the daily ingest stored — it never scrapes. config.json's
+# max_data_age_hours must stay above 24 or the later runs of the day will
+# refuse to post on stale prices.
 on:
   schedule:
-    - cron: "30 13 * * *"   # 10:30 in Buenos Aires
-    - cron: "30 21 * * *"   # 18:30 in Buenos Aires
+    - cron: "0 * * * *"   # every hour, on the hour (UTC)
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Print the tweet instead of posting it"
         type: boolean
         default: false
-      ingest:
-        description: "Scrape fresh offers first instead of using the stored ones"
-        type: boolean
-        default: false
 
+# Never let two runs post at once — they'd pick the same top offer.
 concurrency:
   group: ml-referrals-post
   cancel-in-progress: false
@@ -25,7 +24,7 @@ concurrency:
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -37,26 +36,27 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          # Chromium is only needed when this run also scrapes.
-          if [ "${{ github.event.inputs.ingest }}" = "true" ]; then
-            python -m playwright install --with-deps chromium
-          fi
+          # Chromium is needed to mint meli.la links through the link builder.
+          python -m playwright install --with-deps chromium
 
       - name: Post
         env:
+          # Affiliate identity + session. Without ML_AFFILIATE_STORAGE_STATE the
+          # run still posts, falling back to matt_word/matt_tool links.
           ML_AFFILIATE_TAG: ${{ secrets.ML_AFFILIATE_TAG }}
           ML_AFFILIATE_TOOL_ID: ${{ secrets.ML_AFFILIATE_TOOL_ID }}
+          ML_AFFILIATE_STORAGE_STATE: ${{ secrets.ML_AFFILIATE_STORAGE_STATE }}
+          # X/Twitter cookie auth — same approach as the other pipelines.
           TWITTER_AUTH_TOKEN: ${{ secrets.TWITTER_AUTH_TOKEN }}
           TWITTER_CT0: ${{ secrets.TWITTER_CT0 }}
+          # Optional: nicer copy. Templates are used when absent.
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -euo pipefail
-          # Always exactly one tweet per run — that's what `post` does.
           ARGS=""
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
-          if [ "${{ github.event.inputs.ingest }}" = "true" ]; then ARGS="$ARGS --ingest"; fi
           echo "Running: python run.py post $ARGS"
           python run.py post $ARGS

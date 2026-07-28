@@ -197,6 +197,45 @@ class SupabaseStore:
             )
         return out
 
+    # ---- generated affiliate links ---------------------------------------
+
+    def get_affiliate_links(self, product_ids: list[str], tag: str) -> dict[str, str]:
+        """Cached links for these products, keyed by product_id and scoped by
+        tag so switching affiliate accounts never serves the old one's links."""
+        if not product_ids:
+            return {}
+        out: dict[str, str] = {}
+        for i in range(0, len(product_ids), 200):
+            chunk = product_ids[i : i + 200]
+            rows = (
+                self.sb.table("mlr_affiliate_links")
+                .select("product_id, short_url, full_url")
+                .eq("tag", tag)
+                .in_("product_id", chunk)
+                .execute()
+            ).data or []
+            for r in rows:
+                link = r.get("short_url") or r.get("full_url")
+                if link:
+                    out[r["product_id"]] = link
+        return out
+
+    def save_affiliate_link(
+        self, *, product_id: str, product_url: str, short_url: str,
+        full_url: str, tag: str,
+    ) -> None:
+        self.sb.table("mlr_affiliate_links").upsert(
+            {
+                "product_id": product_id,
+                "product_url": product_url,
+                "short_url": short_url,
+                "full_url": full_url,
+                "tag": tag,
+                "created_at": _now_iso(),
+            },
+            on_conflict="product_id",
+        ).execute()
+
     # ---- posts -----------------------------------------------------------
 
     def recently_posted(self, cooldown_days: int) -> set[str]:
