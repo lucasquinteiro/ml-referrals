@@ -20,6 +20,23 @@ apt-get update -qq
 # Python + the shared libraries headless Chromium needs.
 apt-get install -y -qq python3 python3-venv python3-pip git rsync
 
+echo "==> timezone (so the timers fire on Buenos Aires hours, not UTC)"
+timedatectl set-timezone America/Argentina/Buenos_Aires || true
+
+echo "==> swap (headless Chromium OOMs on a 1GB box without it)"
+TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
+SWAP_MB=$(free -m | awk '/^Swap:/{print $2}')
+if [ "${SWAP_MB:-0}" -lt 512 ] && [ "${TOTAL_MB:-0}" -lt 2048 ]; then
+  echo "   ${TOTAL_MB}MB RAM, no swap — creating a 2G swapfile"
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
+  swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+else
+  echo "   ${TOTAL_MB}MB RAM, ${SWAP_MB}MB swap — fine, skipping"
+fi
+
 echo "==> service user ${APP_USER}"
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"

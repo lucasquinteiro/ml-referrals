@@ -2,10 +2,10 @@
 Description=ml-referrals — ingest on a gentle schedule
 
 [Timer]
-# Four times a day. The rate gate spreads each run's requests out over minutes,
-# so the catalogue refreshes without ever looking like a scraper. The random
-# delay keeps it off the exact hour.
-OnCalendar=*-*-* 00,06,12,18:15
+# Four times a day (Buenos Aires time), each ~1h before a posting block so the
+# queue is fresh. The rate gate spreads each run's requests out over minutes, so
+# the catalogue refreshes without ever looking like a scraper.
+OnCalendar=*-*-* 06,11,16,21:15
 RandomizedDelaySec=1200
 Persistent=true
 

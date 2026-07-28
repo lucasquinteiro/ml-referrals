@@ -2,10 +2,10 @@
 Description=ml-referrals — post every 3 hours
 
 [Timer]
-# 8 tweets a day. `post` sends exactly one, so this cadence IS the rate limit.
-# Offset from the ingest timer so they don't start together (the gate would
-# serialise them anyway, but staggering keeps the logs clean).
-OnCalendar=*-*-* 01,04,07,10,13,16,19,22:30
+# 8 tweets a day, every 2h across waking Buenos Aires hours (setup.sh sets the
+# box to America/Argentina/Buenos_Aires). `post` sends exactly one, so this
+# cadence IS the rate limit. The random delay keeps it off the exact hour.
+OnCalendar=*-*-* 08,10,12,14,16,18,20,22:30
 RandomizedDelaySec=600
 Persistent=true
 
