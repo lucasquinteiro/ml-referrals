@@ -142,8 +142,10 @@ _DEFAULTS: dict[str, Any] = {
 
     # ---- storage ----------------------------------------------------------
     # "sqlite"   -> state/ml_referrals.db (local, gitignored)
-    # "supabase" -> shared Postgres, needed once this runs in GitHub Actions
-    "store": "sqlite",
+    # "supabase" -> shared Postgres; required in GitHub Actions, since a runner
+    #               is ephemeral and a local file would be discarded.
+    # Override per-run with the ML_STORE env var.
+    "store": "supabase",
 
     # ---- LLM (same providers as twitter-updates) --------------------------
     "llm": {
@@ -172,6 +174,12 @@ class Settings:
 
     def get(self, name: str, default: Any = None) -> Any:
         return self._d.get(name, default)
+
+    @property
+    def store(self) -> str:
+        """Backend name. ML_STORE wins, so a local run can stay on SQLite
+        without editing (and accidentally committing) config.json."""
+        return (os.getenv("ML_STORE") or self._d.get("store") or "sqlite").strip()
 
     # ---- affiliate credentials (env wins over config.json) ---------------
 

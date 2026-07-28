@@ -98,7 +98,7 @@
   "tweet_language": "es-AR",
   "tweet_hashtags": [],
   "tweet_disclosure": "",
-  "store": "sqlite",
+  "store": "supabase",
   "llm": {
     "provider": "groq",
     "model": "llama-3.3-70b-versatile",
