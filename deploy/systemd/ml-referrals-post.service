@@ -1,0 +1,19 @@
+[Unit]
+Description=ml-referrals — publish one tweet (mints link + captures card at post time)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mlref
+WorkingDirectory=/opt/ml-referrals
+EnvironmentFile=/opt/ml-referrals/.env
+# One tweet. For the offer it picks it mints the affiliate link and captures
+# Mercado Libre's own offer card — both cached, both gated, so this is at most
+# two metered ML requests.
+ExecStart=/opt/ml-referrals/.venv/bin/python run.py post
+TimeoutStartSec=1200
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

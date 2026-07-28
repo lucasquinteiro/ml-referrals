@@ -1,0 +1,18 @@
+[Unit]
+Description=ml-referrals — check that the saved ML sessions are still logged in
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mlref
+WorkingDirectory=/opt/ml-referrals
+EnvironmentFile=/opt/ml-referrals/.env
+# The longevity instrument: reopens each session, hits a login-only page, and
+# Slacks the moment one is found dead — your signal to re-login (and to weigh
+# `./run login --persist`). Exits non-zero on a dead session.
+ExecStart=/opt/ml-referrals/.venv/bin/python run.py session-check
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

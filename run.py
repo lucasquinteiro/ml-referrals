@@ -32,8 +32,8 @@ and one at a time keeps every publish reviewable.
 config.max_data_age_hours: a tweet built from an expired price is worse than
 no tweet.
 
-In GitHub Actions, `ingest` runs on a schedule and `post` a couple of times a
-day — see .github/workflows/.
+Deployed on a droplet, systemd timers run `ingest`, `post` and `session-check`
+on gentle schedules — see deploy/ and DEPLOY.md.
 """
 
 from __future__ import annotations

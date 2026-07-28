@@ -1,0 +1,19 @@
+[Unit]
+Description=ml-referrals — scrape Mercado Libre search listings, snapshot prices
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mlref
+WorkingDirectory=/opt/ml-referrals
+EnvironmentFile=/opt/ml-referrals/.env
+# Search covers the whole catalogue, not just what ML flags as offers. Every
+# page load is throttled by the rate gate, so a full run is a slow trickle, not
+# a burst — give it room to finish.
+ExecStart=/opt/ml-referrals/.venv/bin/python run.py ingest --source search --pages 2
+TimeoutStartSec=3600
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

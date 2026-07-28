@@ -89,10 +89,9 @@ need to track specific products and call deals yourself.
 ./run ingest --source search --pages 2   # searches each configured keyword
 ```
 
-> This doesn't transfer to GitHub Actions cleanly: a datacenter IP plus a
-> logged-in session is a much stronger bot signal than your home connection, and
-> a headless run can't answer a re-auth or 2FA prompt. `/ofertas` needs no login
-> at all, which is why it stays the default.
+> Search runs on the droplet from one stable IP, paced by the rate gate. That's
+> a far gentler footprint than the datacenter-IP bursts we'd have had on CI —
+> which is the whole reason this moved to a persistent box.
 
 Category pages (`/c/<category>`) are *not* a way around the wall — they're browse
 landing pages: no discount data, and `?page=2` returns the same items.
@@ -376,8 +375,8 @@ Export it any time with `./run report --export prices.json`.
 
 - `"store": "sqlite"` (default) — `state/ml_referrals.db`, gitignored. Fine for
   local runs.
-- `"store": "supabase"` — required for GitHub Actions, because a runner is
-  ephemeral and a local SQLite file would be discarded after every run. Apply
+- `"store": "supabase"` — good when you want to query or run things from
+  more than one machine. Apply
   [`supabase_schema.sql`](supabase_schema.sql) once, set `SUPABASE_URL` and
   `SUPABASE_SERVICE_ROLE_KEY`, and flip the setting. Tables are `mlr_`-prefixed
   since the Supabase project is shared with the other pipelines.
@@ -408,30 +407,30 @@ auth. Two things there drift over time and both self-heal: the GraphQL query id
 is discovered from X's JS bundle and cached in `state/`, and missing `features`
 flags are re-added from X's own error response and retried once.
 
-## GitHub Actions
+## Running it unattended
 
-Two scheduled workflows, no server needed:
+On an always-on box (a droplet), three systemd timers do everything — `ingest`
+(4×/day, search listings), `post` (every 3h), and `session-check` (2×/day). No
+GitHub Actions: a persistent server keeps the Mercado Libre session warm, holds
+the rate gate's state across runs, and gives ML one stable IP instead of a
+rotating datacenter one.
 
-| Workflow | Schedule | What it does |
-| --- | --- | --- |
-| [`ingest.yml`](.github/workflows/ingest.yml) | daily, 11:00 UTC | scrape, snapshot prices, Slack summary |
-| [`post.yml`](.github/workflows/post.yml) | every 3 hours | publish exactly one tweet |
+Everything ML-facing routes through the **rate gate** (`config.json` → `ml_gate`):
+a jittered minimum interval, per-account hourly/daily budgets, and a
+circuit-breaker cooldown on any wall, shared across every process so nothing
+bursts. `./run report` shows each account's usage against budget.
 
-`post` always sends one tweet, so the cron is the rate limit.
+**Full setup is in [DEPLOY.md](DEPLOY.md)** and
+[`deploy/README.md`](deploy/README.md) — provisioning, the three timers, and how
+sessions + secrets get rsynced up. The short version:
 
-**Full setup — Supabase, every secret, Slack, and the first test run — is in
-[DEPLOY.md](DEPLOY.md).** The short version: set `"store": "supabase"`, apply
-[`supabase_schema.sql`](supabase_schema.sql), and add these repository secrets:
-
+```bash
+# on the droplet
+git clone https://github.com/lucasquinteiro/ml-referrals /opt/ml-referrals
+bash /opt/ml-referrals/deploy/setup.sh
+# from your laptop
+bash deploy/push.sh root@your-droplet
 ```
-SUPABASE_URL  SUPABASE_SERVICE_ROLE_KEY
-ML_AFFILIATE_TAG  ML_AFFILIATE_TOOL_ID
-TWITTER_AUTH_TOKEN  TWITTER_CT0
-ML_AFFILIATE_STORAGE_STATE  SLACK_WEBHOOK_URL  GROQ_API_KEY   (all optional)
-```
-
-Run each workflow once by hand with `dry_run: true` before letting the
-schedules take over.
 
 ## Slack notifications
 
