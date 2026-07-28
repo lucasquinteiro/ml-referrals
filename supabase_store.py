@@ -236,6 +236,56 @@ class SupabaseStore:
             on_conflict="product_id",
         ).execute()
 
+    # ---- offer card images ------------------------------------------------
+
+    IMAGE_BUCKET = "offer-cards"
+
+    def get_offer_images(self, product_ids: list[str]) -> dict[str, str]:
+        if not product_ids:
+            return {}
+        out: dict[str, str] = {}
+        for i in range(0, len(product_ids), 200):
+            rows = (
+                self.sb.table("mlr_offer_images")
+                .select("product_id, url")
+                .in_("product_id", product_ids[i : i + 200])
+                .execute()
+            ).data or []
+            out.update({r["product_id"]: r["url"] for r in rows if r.get("url")})
+        return out
+
+    def save_offer_image(self, *, product_id: str, url: str,
+                         local_path: str = "") -> None:
+        self.sb.table("mlr_offer_images").upsert(
+            {"product_id": product_id, "url": url, "local_path": local_path,
+             "created_at": _now_iso()},
+            on_conflict="product_id",
+        ).execute()
+
+    def upload_image(self, product_id: str, path: Any) -> Optional[str]:
+        """Push a rendered card into Supabase Storage and return its public URL.
+
+        This is the bridge between the two halves of the pipeline: the image is
+        made on your machine, but the posting job runs on a GitHub runner that
+        can't see your disk.
+        """
+        from pathlib import Path as _Path
+
+        data = _Path(path).read_bytes()
+        key = f"{product_id}.png"
+        try:
+            self.sb.storage.from_(self.IMAGE_BUCKET).upload(
+                key, data,
+                {"content-type": "image/png", "x-upsert": "true"},
+            )
+        except Exception as e:  # noqa: BLE001 - usually "bucket not found"
+            raise RuntimeError(
+                f"Could not upload to the '{self.IMAGE_BUCKET}' bucket ({e}). "
+                "Create it in Supabase (Storage -> New bucket) and mark it "
+                "public, or set tweet_image_mode back to \"product\"."
+            ) from e
+        return self.sb.storage.from_(self.IMAGE_BUCKET).get_public_url(key)
+
     # ---- posts -----------------------------------------------------------
 
     def recently_posted(self, cooldown_days: int) -> set[str]:

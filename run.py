@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 import config as cfg
@@ -70,6 +71,9 @@ def _parse_args() -> argparse.Namespace:
                      help="Skip the Slack summary even if SLACK_WEBHOOK_URL is set")
     ing.add_argument("--no-links", action="store_true",
                      help="Skip pre-minting affiliate links for this run")
+    ing.add_argument("--start-page", type=int, default=1, metavar="N",
+                     help="First /ofertas page to crawl. Split a big crawl "
+                          "across several runs instead of one burst.")
 
     lg = sub.add_parser(
         "login",
@@ -106,6 +110,18 @@ def _parse_args() -> argparse.Namespace:
                      help="Only show offers at or above this discount, "
                           "overriding the config floor and any per-keyword one")
     _freshness_flags(ofr)
+
+    img = sub.add_parser(
+        "images",
+        help="Render offer-card images locally and upload them for the posting job",
+    )
+    img.add_argument("--limit", type=int, default=10,
+                     help="How many of the top offers to render (default 10)")
+    img.add_argument("--delay", type=float, default=6.0,
+                     help="Seconds between captures (default 6)")
+    img.add_argument("--redo", action="store_true",
+                     help="Re-render even if an image is already stored")
+    _freshness_flags(img)
 
     db = sub.add_parser("db", help="Run a read-only SQL query against the store")
     db.add_argument("sql", nargs="?", default=None,
@@ -159,7 +175,8 @@ def _get_store(settings: Any):
 
 
 def _scrape_and_match(
-    settings: Any, *, pages: int, headed: bool, keyword_overrides=None, source: str = "ofertas"
+    settings: Any, *, pages: int, headed: bool, keyword_overrides=None,
+    source: str = "ofertas", start_page: int = 1,
 ):
     """Shared by `ingest` and `post --ingest`. Returns (all_products, matched)."""
     import auth
@@ -173,7 +190,8 @@ def _scrape_and_match(
         keywords = off.load_keywords(settings)
 
     where = "/ofertas" if source == "ofertas" else "search"
-    log_stage(f"Scraping {settings.site} {where} ({pages} pages)")
+    span = f"pages {start_page}-{start_page + pages - 1}" if start_page > 1 else f"{pages} pages"
+    log_stage(f"Scraping {settings.site} {where} ({span})")
     log_step(f"{len(keywords)} keyword(s): " + ", ".join(k.term for k in keywords))
     log_step(f"scraping session: {auth.describe_session(auth.SCRAPING)}")
 
@@ -204,7 +222,7 @@ def _scrape_and_match(
         from scraper import scrape_offers_http
 
         products = scrape_offers_http(
-            settings.site, pages=pages,
+            settings.site, pages=pages, start_page=start_page,
             delay_sec=settings.delay_between_pages_sec,
         )
 
@@ -293,6 +311,7 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
     products, matched = _scrape_and_match(
         settings, pages=pages, headed=args.headed,
         keyword_overrides=args.keyword, source=args.source,
+        start_page=args.start_page,
     )
 
     deals = off.filter_offers(matched, settings)
@@ -465,7 +484,7 @@ def _render(product: Any, link: str, settings: Any, *, use_llm: bool) -> str:
     return tw.build_tweet(product, link, settings, deterministic=not use_llm)
 
 
-def _resolve_image(product: Any, settings: Any):
+def _resolve_image(product: Any, settings: Any, store: Any = None):
     """Pick the picture for a tweet. Returns (image_url, local_path).
 
     "screenshot" mode grabs Mercado Libre's own offer card, which is the look
@@ -477,6 +496,18 @@ def _resolve_image(product: Any, settings: Any):
     mode = settings.get("tweet_image_mode", "product")
     if mode == "none":
         return None, None
+
+    # An image rendered by `./run images` always wins: it's Mercado Libre's own
+    # card, and it costs the posting job nothing but a download.
+    if store is not None:
+        stored = store.get_offer_images([product.product_id]).get(product.product_id)
+        if stored:
+            if stored.startswith("http"):
+                log_step("using the stored offer-card image")
+                return stored, None
+            if Path(stored).is_file():
+                log_step("using the stored offer-card image")
+                return None, stored
 
     if mode == "screenshot":
         import card as card_mod
@@ -677,6 +708,74 @@ NAMED_QUERIES: dict[str, tuple[str, str]] = {
 }
 
 
+def cmd_images(args: argparse.Namespace, settings: Any) -> int:
+    """Capture Mercado Libre's own offer card for the top offers, locally.
+
+    This is a local-only job on purpose. It drives a browser against /ofertas,
+    which is exactly the traffic that shouldn't come from a datacenter IP on a
+    schedule. The rendered image is uploaded so the GitHub posting job — which
+    can't see this machine — can attach it.
+    """
+    import random
+    import time as _time
+
+    import card as card_mod
+    from lib.log import log_err, log_ok, log_stage, log_step, log_warn
+    import screenshot as shot_mod
+
+    store = _get_store(settings)
+    try:
+        log_stage("Checking the scraped data")
+        bail = _require_fresh_data(store, settings, args)
+        if bail is not None:
+            return bail
+
+        deals = _select_deals(store, settings)[: args.limit]
+        if not deals:
+            log_warn("No offers in the queue. Run `./run ingest` first.")
+            return 0
+
+        have = {} if args.redo else store.get_offer_images([p.product_id for p in deals])
+        todo = [p for p in deals if p.product_id not in have]
+        log_stage(f"{len(todo)} image(s) to render ({len(have)} already stored)")
+        if not todo:
+            return 0
+
+        shots_dir = cfg.STATE_DIR / "shots"
+        made = 0
+        for i, product in enumerate(todo, 1):
+            log_step(f"[{i}/{len(todo)}] {product.discount_pct}% — {product.title[:46]}")
+            raw = shot_mod.capture_offer_card(product, shots_dir / f"{product.product_id}.png",
+                                              site=settings.site)
+            if not raw:
+                continue
+            composed = card_mod.compose_screenshot(
+                raw, shots_dir / f"{product.product_id}-card.png", product=product
+            )
+            try:
+                url = store.upload_image(product.product_id, composed)
+            except RuntimeError as e:
+                log_err(str(e))
+                return 1
+            if url:
+                store.save_offer_image(product_id=product.product_id, url=url,
+                                       local_path=str(composed))
+                made += 1
+            else:
+                # SQLite has nowhere to host it; keep the path so local runs work.
+                store.save_offer_image(product_id=product.product_id,
+                                       url=str(composed), local_path=str(composed))
+                made += 1
+
+            if i < len(todo):
+                _time.sleep(random.uniform(args.delay * 0.6, args.delay * 1.4))
+
+        log_ok(f"{made} image(s) ready for posting")
+        return 0
+    finally:
+        store.close()
+
+
 def cmd_db(args: argparse.Namespace, settings: Any) -> int:
     """Run SQL against the SQLite store and print the result as a table."""
     import csv
@@ -788,7 +887,7 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
         _show(product, link, text, "DRY RUN" if args.dry_run else "POSTING")
 
         print()
-        image_url, image_path = _resolve_image(product, settings)
+        image_url, image_path = _resolve_image(product, settings, store)
         try:
             tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR,
                                      dry_run=args.dry_run).post(
@@ -990,6 +1089,7 @@ def main() -> int:
         "ingest": cmd_ingest,
         "simulate": cmd_simulate,
         "offers": cmd_offers,
+        "images": cmd_images,
         "db": cmd_db,
         "post": cmd_post,
         "report": cmd_report,

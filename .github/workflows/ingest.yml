@@ -1,14 +1,18 @@
-name: ingest
+name: ingest (manual)
 
-# Scrape MercadoLibre offers, snapshot prices, and post a summary to Slack.
-# Once a day: the offer catalogue doesn't churn fast enough to justify more,
-# and the price history only needs daily resolution to be useful.
+# NOT SCHEDULED, deliberately.
 #
-# Requires config.json "store": "supabase" — a GitHub runner is ephemeral, so a
-# SQLite file under state/ would be discarded after every run.
+# Everything that touches Mercado Libre — scraping, minting affiliate links,
+# capturing offer cards — runs on your own machine, from your own IP, paced by
+# `./run ingest`. Doing it from a GitHub runner means a datacenter IP hitting
+# the site on a fixed schedule, which is what gets accounts and IPs flagged,
+# and every failure there costs a re-login on an account you can't afford to
+# keep re-authenticating.
+#
+# This workflow is kept for one-off manual runs (anonymous /ofertas only, no
+# session, no link minting). The scheduled path is `post.yml`, which never
+# touches Mercado Libre at all.
 on:
-  schedule:
-    - cron: "0 11 * * *"   # 11:00 UTC = 08:00 in Buenos Aires
   workflow_dispatch:
     inputs:
       pages:
@@ -36,22 +40,16 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        # /ofertas is server-rendered, so scraping needs no browser. Chromium is
-        # here only as the fallback transport for minting affiliate links, when
-        # the plain-HTTP path isn't accepted.
-        run: |
-          pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+        # No browser: /ofertas is server-rendered, and this workflow never mints
+        # links (--no-links below), so nothing here needs Chromium.
+        run: pip install -r requirements.txt
 
       - name: Ingest
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          # Minting links during ingest is what keeps the post job browser-free.
-          ML_AFFILIATE_TAG: ${{ secrets.ML_AFFILIATE_TAG }}
-          ML_AFFILIATE_TOOL_ID: ${{ secrets.ML_AFFILIATE_TOOL_ID }}
-          ML_AFFILIATE_STORAGE_STATE: ${{ secrets.ML_AFFILIATE_STORAGE_STATE }}
+          # No affiliate session on purpose — link minting is a local job.
           # No Mercado Libre session here on purpose: this scrapes /ofertas,
           # which is public. Search would need one, but a logged-in session on
           # a datacenter IP is exactly what gets an account flagged.
@@ -61,5 +59,5 @@ jobs:
           PAGES="${{ github.event.inputs.pages }}"
           if [ -n "$PAGES" ]; then ARGS="$ARGS --pages $PAGES"; fi
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
-          echo "Running: python run.py ingest $ARGS"
-          python run.py ingest $ARGS
+          echo "Running: python run.py ingest --no-links $ARGS"
+          python run.py ingest --no-links $ARGS

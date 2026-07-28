@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS affiliate_links (
     created_at  TEXT NOT NULL
 );
 
+-- Offer-card images rendered locally. The URL points at wherever the image is
+-- hosted (Supabase Storage), because the posting job runs on a GitHub runner
+-- that has no access to this machine's disk.
+CREATE TABLE IF NOT EXISTS offer_images (
+    product_id TEXT PRIMARY KEY,
+    url        TEXT NOT NULL,
+    local_path TEXT,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at     TEXT NOT NULL,
@@ -283,6 +293,39 @@ class Store:
             (product_id, product_url, short_url, full_url, tag, _now_iso()),
         )
         self.conn.commit()
+
+    # ---- offer card images ------------------------------------------------
+
+    def get_offer_images(self, product_ids: list[str]) -> dict[str, str]:
+        if not product_ids:
+            return {}
+        out: dict[str, str] = {}
+        for i in range(0, len(product_ids), 400):
+            chunk = product_ids[i : i + 400]
+            q = ",".join("?" * len(chunk))
+            rows = self.conn.execute(
+                f"SELECT product_id, url FROM offer_images WHERE product_id IN ({q})",
+                chunk,
+            ).fetchall()
+            out.update({r["product_id"]: r["url"] for r in rows if r["url"]})
+        return out
+
+    def save_offer_image(self, *, product_id: str, url: str,
+                         local_path: str = "") -> None:
+        self.conn.execute(
+            """INSERT INTO offer_images (product_id, url, local_path, created_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(product_id) DO UPDATE SET
+                   url = excluded.url,
+                   local_path = excluded.local_path,
+                   created_at = excluded.created_at""",
+            (product_id, url, local_path, _now_iso()),
+        )
+        self.conn.commit()
+
+    def upload_image(self, product_id: str, path: Any) -> Optional[str]:
+        """SQLite has nowhere to host an image; the local path is the 'url'."""
+        return None
 
     # ---- posts -----------------------------------------------------------
 

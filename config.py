@@ -83,8 +83,10 @@ _DEFAULTS: dict[str, Any] = {
     "site": "https://www.mercadolibre.com.ar",
     # How many /ofertas pages to crawl per run (~45 products per page).
     "pages_per_run": 12,
-    # Seconds to wait between page loads. Be polite — this is someone's site.
-    "delay_between_pages_sec": 2.5,
+    # Seconds between page loads, randomised by +/-50% so the interval isn't
+    # itself a bot signature. Be polite — this is someone's site, and the
+    # whole pipeline depends on not being flagged.
+    "delay_between_pages_sec": 4.0,
     # Fail the run if fewer than this many products were scraped (catches the
     # case where MercadoLibre changed their markup and every selector broke).
     "min_products_expected": 20,

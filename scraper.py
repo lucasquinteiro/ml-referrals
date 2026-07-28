@@ -206,9 +206,22 @@ def _parse_card(card: Any) -> Optional[dict[str, Any]]:
 
 
 def scrape_offers_http(
-    site: str, *, pages: int = 12, delay_sec: float = 1.5
+    site: str,
+    *,
+    pages: int = 12,
+    delay_sec: float = 1.5,
+    start_page: int = 1,
+    jitter: float = 0.5,
 ) -> list[Product]:
-    """Crawl /ofertas over plain HTTP. Same output as the browser scraper."""
+    """Crawl /ofertas over plain HTTP. Same output as the browser scraper.
+
+    Paced deliberately. A fixed interval between requests is itself a bot
+    signal, so each gap is randomised by +/- `jitter` around `delay_sec`.
+    `start_page` lets a big crawl be split across several runs spread over the
+    day rather than arriving as one burst.
+    """
+    import random
+
     import httpx
     from bs4 import BeautifulSoup
 
@@ -216,7 +229,7 @@ def scrape_offers_http(
     seen: dict[str, Product] = {}
 
     with httpx.Client(timeout=30, headers=_HTTP_HEADERS, follow_redirects=True) as client:
-        for n in range(1, pages + 1):
+        for n in range(start_page, start_page + pages):
             url = f"{site}/ofertas" if n == 1 else f"{site}/ofertas?page={n}"
             try:
                 resp = client.get(url)
@@ -245,8 +258,9 @@ def scrape_offers_http(
             if not batch or new == 0:
                 log_step(f"page {n} added nothing new; stopping pagination")
                 break
-            if n < pages:
-                time.sleep(delay_sec)
+            if n < start_page + pages - 1:
+                low = max(0.3, delay_sec * (1 - jitter))
+                time.sleep(random.uniform(low, delay_sec * (1 + jitter)))
 
     return list(seen.values())
 

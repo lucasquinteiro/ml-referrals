@@ -66,3 +66,13 @@ create table if not exists mlr_affiliate_links (
 );
 create index if not exists idx_mlr_affiliate_links_tag
     on mlr_affiliate_links (tag);
+
+-- Offer-card images rendered locally and uploaded to Supabase Storage, so the
+-- GitHub posting job (which can't see your disk) can attach them.
+-- Also create a PUBLIC storage bucket named "offer-cards".
+create table if not exists mlr_offer_images (
+    product_id text primary key,
+    url        text not null,
+    local_path text,
+    created_at timestamptz not null default now()
+);

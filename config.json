@@ -78,7 +78,7 @@
   ],
   "site": "https://www.mercadolibre.com.ar",
   "pages_per_run": 12,
-  "delay_between_pages_sec": 2.5,
+  "delay_between_pages_sec": 4.0,
   "min_discount_pct": 20,
   "preferred_min_discount_pct": 60,
   "min_price": 0,

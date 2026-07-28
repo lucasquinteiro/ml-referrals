@@ -1,14 +1,44 @@
 # Running this on GitHub Actions
 
-Two scheduled workflows, no server to host:
+**Only posting is scheduled.** Everything that touches Mercado Libre runs on
+your own machine.
 
-| Workflow | Schedule | What it does |
+| Where | Job | Touches Mercado Libre? |
 | --- | --- | --- |
-| [`ingest.yml`](.github/workflows/ingest.yml) | daily, 11:00 UTC (08:00 ART) | scrape, snapshot prices, Slack summary |
-| [`post.yml`](.github/workflows/post.yml) | every 3 hours | publish exactly one tweet |
+| **GitHub, every 3h** | [`post.yml`](.github/workflows/post.yml) — one tweet | **No** |
+| Local, when you choose | `./run ingest` — scrape + snapshot prices | yes, anonymous |
+| Local, when you choose | link minting (part of ingest) | yes, affiliate account |
+| Local, when you choose | `./run images` — capture offer cards | yes, anonymous |
 
-`post` always sends one tweet, so the cron *is* the rate limit — every 3 hours
-means 8 tweets/day.
+That split is deliberate. A datacenter IP hitting Mercado Libre on a fixed
+schedule is what gets IPs and accounts flagged, and every flag costs a re-login
+on an account you can't afford to keep re-authenticating. So the scheduled job
+only ever talks to X and Supabase — it reads what your local runs stored.
+
+[`ingest.yml`](.github/workflows/ingest.yml) still exists but is **not
+scheduled**: manual dispatch only, anonymous, and it never mints links.
+
+## The local loop
+
+Run these when you feel like it — nothing breaks if you skip a day, and pacing
+is the point:
+
+```bash
+./run ingest --pages 4                 # scrape + snapshot + mint links
+./run ingest --pages 4 --start-page 5  # later: the next chunk, not one burst
+./run images --limit 10                # render offer cards, upload for posting
+./run simulate                         # see what the next tweet will be
+```
+
+Page fetches are spaced by `delay_between_pages_sec` (4s) randomised +/-50%, so
+the interval isn't itself a signature. `--start-page` splits a big crawl across
+several runs spread over the day.
+
+`./run images` is what makes tweets show Mercado Libre's real offer card. It
+needs a browser, so it stays local; the rendered PNG is uploaded to Supabase
+Storage and the posting job just downloads it. **It only works for products
+that came from `/ofertas`** — search-sourced products aren't on that page, and
+their product pages are login-walled.
 
 ---
 
@@ -22,10 +52,13 @@ nothing to read. Supabase gives you a database without hosting anything.
 2. Open **SQL Editor** and run the contents of
    [`supabase_schema.sql`](supabase_schema.sql). It creates five `mlr_`-prefixed
    tables (the prefix keeps it safe to share a project with other pipelines).
-3. **Settings → API** gives you the two values you need:
+3. If you want `./run images`, create a **public** Storage bucket named
+   `offer-cards` (Storage → New bucket → public). Skip it and tweets fall back
+   to the plain product photo.
+4. **Settings → API** gives you the two values you need:
    - Project URL → `SUPABASE_URL`
    - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY`
-4. Flip the backend in [`config.json`](config.json):
+5. Flip the backend in [`config.json`](config.json):
 
 ```json
 "store": "supabase"
