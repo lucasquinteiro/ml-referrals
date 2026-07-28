@@ -535,12 +535,60 @@ def _render(product: Any, link: str, settings: Any, *, use_llm: bool) -> str:
     return tw.build_tweet(product, link, settings, deterministic=not use_llm)
 
 
+def _capture_offer_image(
+    product: Any, settings: Any, store: Any, *, sources: Optional[list[str]] = None
+) -> Optional[str]:
+    """Capture Mercado Libre's own offer card for one product, cache it, return
+    its stored reference (a URL or a local path), or None.
+
+    Tries each source in turn and stops at the first hit. Default order is
+    /ofertas first (anonymous — no session, no account risk) then search (needs
+    the burner session but covers products ML doesn't flag as offers). Every
+    page load is gated, so a post-time capture is just one more metered request.
+    """
+    import auth
+    import card as card_mod
+    from lib.log import log_err, log_step
+    import screenshot as shot_mod
+
+    if sources is None:
+        sources = ["ofertas"]
+        if auth.has_session(auth.SCRAPING):
+            sources.append("search")
+
+    shots = cfg.STATE_DIR / "shots"
+    for source in sources:
+        raw = shot_mod.capture_offer_card(
+            product, shots / f"{product.product_id}.png",
+            site=settings.site, source=source,
+        )
+        if not raw:
+            continue
+        composed = card_mod.compose_screenshot(
+            raw, shots / f"{product.product_id}-card.png", product=product
+        )
+        # On Supabase, push the PNG to Storage so any machine can fetch it; on
+        # SQLite the local path is the reference (the droplet reads its own disk).
+        try:
+            url = store.upload_image(product.product_id, composed)
+        except RuntimeError as e:
+            log_err(str(e))
+            return None
+        ref = url or str(composed)
+        store.save_offer_image(product_id=product.product_id, url=ref,
+                               local_path=str(composed))
+        log_step(f"cached offer card ({source})")
+        return ref
+    return None
+
+
 def _resolve_image(product: Any, settings: Any, store: Any = None):
     """Pick the picture for a tweet. Returns (image_url, local_path).
 
-    "screenshot" mode grabs Mercado Libre's own offer card, which is the look
-    people recognise — but it costs a browser and only works while the offer is
-    still on /ofertas, so it degrades to the product photo rather than failing.
+    "screenshot" mode uses Mercado Libre's own offer card — the look people
+    recognise. It's captured lazily for just this one product and cached, so a
+    post costs at most one gated screenshot. Degrades to the product photo when
+    the offer can't be found (rotated off, or no session for search).
     """
     from lib.log import log_step
 
@@ -548,28 +596,21 @@ def _resolve_image(product: Any, settings: Any, store: Any = None):
     if mode == "none":
         return None, None
 
-    # An image rendered by `./run images` always wins: it's Mercado Libre's own
-    # card, and it costs the posting job nothing but a download.
+    def _as_pair(ref: str):
+        return (ref, None) if ref.startswith("http") else (None, ref)
+
+    # A previously-cached card always wins — no ML request at all.
     if store is not None:
         stored = store.get_offer_images([product.product_id]).get(product.product_id)
-        if stored:
-            if stored.startswith("http"):
-                log_step("using the stored offer-card image")
-                return stored, None
-            if Path(stored).is_file():
-                log_step("using the stored offer-card image")
-                return None, stored
+        if stored and (stored.startswith("http") or Path(stored).is_file()):
+            log_step("using the stored offer-card image")
+            return _as_pair(stored)
 
-    if mode == "screenshot":
-        import card as card_mod
-        import screenshot as shot_mod
-
-        raw = cfg.STATE_DIR / "shots" / f"{product.product_id}.png"
-        got = shot_mod.capture_offer_card(product, raw, site=settings.site)
-        if got:
-            composed = cfg.STATE_DIR / "shots" / f"{product.product_id}-card.png"
-            return None, str(card_mod.compose_screenshot(got, composed, product=product))
-        log_step("falling back to the product photo")
+    if mode == "screenshot" and store is not None:
+        ref = _capture_offer_image(product, settings, store)
+        if ref:
+            return _as_pair(ref)
+        log_step("no offer card available — using the product photo")
 
     return (product.image or None), None
 
@@ -770,9 +811,7 @@ def cmd_images(args: argparse.Namespace, settings: Any) -> int:
     import random
     import time as _time
 
-    import card as card_mod
-    from lib.log import log_err, log_ok, log_stage, log_step, log_warn
-    import screenshot as shot_mod
+    from lib.log import log_ok, log_stage, log_step, log_warn
 
     store = _get_store(settings)
     try:
@@ -792,34 +831,14 @@ def cmd_images(args: argparse.Namespace, settings: Any) -> int:
         if not todo:
             return 0
 
-        shots_dir = cfg.STATE_DIR / "shots"
+        source = getattr(args, "source", "ofertas")
         made = 0
         for i, product in enumerate(todo, 1):
             log_step(f"[{i}/{len(todo)}] {product.discount_pct}% — {product.title[:46]}")
-            raw = shot_mod.capture_offer_card(
-                product, shots_dir / f"{product.product_id}.png",
-                site=settings.site, source=getattr(args, "source", "ofertas"),
-            )
-            if not raw:
-                continue
-            composed = card_mod.compose_screenshot(
-                raw, shots_dir / f"{product.product_id}-card.png", product=product
-            )
-            try:
-                url = store.upload_image(product.product_id, composed)
-            except RuntimeError as e:
-                log_err(str(e))
-                return 1
-            if url:
-                store.save_offer_image(product_id=product.product_id, url=url,
-                                       local_path=str(composed))
+            if _capture_offer_image(product, settings, store, sources=[source]):
                 made += 1
-            else:
-                # SQLite has nowhere to host it; keep the path so local runs work.
-                store.save_offer_image(product_id=product.product_id,
-                                       url=str(composed), local_path=str(composed))
-                made += 1
-
+            # The rate gate already paces the page loads; this is a small extra
+            # breath between products so a batch never looks metronomic.
             if i < len(todo):
                 _time.sleep(random.uniform(args.delay * 0.6, args.delay * 1.4))
 

@@ -101,7 +101,7 @@
   },
   "use_llm_for_copy": true,
   "tweet_language": "es-AR",
-  "tweet_image_mode": "product",
+  "tweet_image_mode": "screenshot",
   "tweet_hashtags": [],
   "tweet_disclosure": "",
   "store": "supabase",
