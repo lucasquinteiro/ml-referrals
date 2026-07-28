@@ -14,8 +14,9 @@ automated scraping. Nothing stops you pointing both at one account, but the
 whole reason for the split is that you shouldn't.
 
 Your password never goes near this code. `./run login --role <role>` opens a
-real browser window; you log in yourself (2FA included), and Playwright saves
-the resulting cookies to state/, which is gitignored.
+real browser window; you log in yourself (2FA included), and the resulting
+session is saved to state/ (gitignored). By default that's a frozen JSON
+snapshot; `--persist` saves a live browser profile instead — see login().
 
 Resolution per role (first hit wins):
   1. the role's env var  (ML_STORAGE_STATE_PATH / ML_AFFILIATE_STORAGE_STATE_PATH)
@@ -45,7 +46,9 @@ UA = (
 # A live browser profile directory per role — the persistent alternative to a
 # frozen storage_state snapshot. Chromium reads *and writes* this as it browses,
 # so Mercado Libre's rotating tokens are kept across runs instead of being
-# replayed stale. This is what a `./run login` creates now.
+# replayed stale. Opt-in via `./run login --persist`; snapshots are the default
+# because they're currently working and the rate gate addresses the likely
+# cause of the deaths we saw. BrowserSession uses a profile when one exists.
 _PROFILE_DIR = cfg.STATE_DIR / "profiles"
 
 _ENV_VARS = {
@@ -349,12 +352,17 @@ def _verify_affiliate(page, site: str) -> tuple[bool, str]:
     return True, f"affiliate link generation works for tag '{tag}'"
 
 
-def login(site: str, role: str = SCRAPING) -> int:
+def login(site: str, role: str = SCRAPING, *, persist: bool = False) -> int:
     """Open a browser, wait for the user to log in, verify, then save.
 
-    Saves a *persistent profile* now (state/profiles/<role>), not a frozen
-    snapshot. Chromium keeps that profile's cookies current on every later run,
-    the way a real logged-in browser does — the fix for sessions dying in a day.
+    Default saves a frozen storage_state snapshot (state/ml-session-<role>.json)
+    — the approach that's currently working, so we're leaving it be. `--persist`
+    saves a live browser profile instead (state/profiles/<role>), which keeps
+    ML's rotating tokens fresh; reach for it only if snapshots start getting
+    signed out. `session-check` is how you'll know when that day comes.
+
+    BrowserSession reads whichever exists (profile wins if both are present), so
+    the two are interchangeable without touching anything else.
     """
     from playwright.sync_api import sync_playwright
 
@@ -362,27 +370,37 @@ def login(site: str, role: str = SCRAPING) -> int:
         log_err(f"Unknown role '{role}'. Use one of: {', '.join(ROLES)}")
         return 1
 
-    target = profile_dir(role)
-    target.mkdir(parents=True, exist_ok=True)
+    cfg.STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     log_step(f"Logging in for the \033[1m{role}\033[0m session — "
-             f"{_DESCRIPTIONS[role]}.")
+             f"{_DESCRIPTIONS[role]}"
+             f"{' (persistent profile)' if persist else ''}.")
     if role == SCRAPING and has_session(AFFILIATE):
         log_step("Tip: sign in with a *different* account than your affiliate one.")
 
     with sync_playwright() as p:
-        # A persistent context IS the profile on disk — no storage_state.
-        ctx = p.chromium.launch_persistent_context(
-            str(target), headless=False,
-            args=["--disable-blink-features=AutomationControlled"],
-            locale="es-AR", viewport={"width": 1280, "height": 900},
-        )
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if persist:
+            target = profile_dir(role)
+            target.mkdir(parents=True, exist_ok=True)
+            ctx = p.chromium.launch_persistent_context(
+                str(target), headless=False,
+                args=["--disable-blink-features=AutomationControlled"],
+                locale="es-AR", viewport={"width": 1280, "height": 900},
+            )
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        else:
+            browser = p.chromium.launch(
+                headless=False, args=["--disable-blink-features=AutomationControlled"]
+            )
+            # Clean context: reusing the other role's cookies is how you save the
+            # same account twice without noticing.
+            ctx = browser.new_context(locale="es-AR", viewport={"width": 1280, "height": 900})
+            page = ctx.new_page()
+
         page.goto(site.rstrip("/") + "/", wait_until="domcontentloaded", timeout=60_000)
 
         log_step("A browser window is open. Log in to Mercado Libre there.")
-        log_step("Nothing you type is visible to this process; the login lives in")
-        log_step("the profile on disk, which Chromium keeps refreshed from now on.")
+        log_step("Nothing you type is visible to this process; only the session is saved.")
         print()
         try:
             input("  Press Enter here once you're logged in (Ctrl-C to cancel)... ")
@@ -399,19 +417,21 @@ def login(site: str, role: str = SCRAPING) -> int:
         except Exception as e:  # noqa: BLE001 - save anyway, just say so
             ok, detail = True, f"could not verify ({type(e).__name__}: {e})"
 
-        _write_account_sidecar(role, ctx)
+        if persist:
+            _write_account_sidecar(role, ctx)
+            saved_to = f"state/profiles/{role}/"
+        else:
+            ctx.storage_state(path=str(session_file(role)))
+            saved_to = f"state/{session_file(role).name}"
         ctx.close()
 
     if not ok:
-        log_warn(f"profile saved to state/profiles/{role}/, but {detail}")
+        log_warn(f"session saved to {saved_to}, but {detail}")
         return 1
 
-    log_ok(f"{role} session saved as a persistent profile (state/profiles/{role}/)")
+    log_ok(f"{role} session saved ({saved_to})")
     log_step(f"account: {describe_session(role)}")
     log_step(detail)
-
-    log_step("It's a live profile, not a snapshot — it refreshes itself. "
-             "Re-run only if it ever gets signed out.")
 
     other = AFFILIATE if role == SCRAPING else SCRAPING
     this_acct = (session_account(role) or {}).get("user_id")
@@ -424,5 +444,5 @@ def login(site: str, role: str = SCRAPING) -> int:
             f"  on. Re-run `./run login --role {SCRAPING}` with a burner."
         )
 
-    log_step("It's gitignored. Re-run this when it expires.")
+    log_step("It's gitignored. Re-run this if `session-check` reports it dead.")
     return 0

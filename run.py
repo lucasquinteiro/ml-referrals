@@ -80,6 +80,9 @@ def _parse_args() -> argparse.Namespace:
     lg.add_argument("--role", choices=["scraping", "affiliate"], default="scraping",
                     help="scraping = burner for search pages (default); "
                          "affiliate = the account that mints your links")
+    lg.add_argument("--persist", action="store_true",
+                    help="Save a live browser profile instead of a JSON snapshot. "
+                         "Only needed if snapshots start getting signed out.")
 
     sc = sub.add_parser(
         "session-check",
@@ -1201,7 +1204,7 @@ def cmd_check_affiliate(args: argparse.Namespace, settings: Any) -> int:
 def cmd_login(args: argparse.Namespace, settings: Any) -> int:
     import auth
 
-    return auth.login(settings.site, args.role)
+    return auth.login(settings.site, args.role, persist=args.persist)
 
 
 def cmd_session_check(args: argparse.Namespace, settings: Any) -> int:
