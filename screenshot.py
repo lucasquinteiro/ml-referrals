@@ -175,7 +175,7 @@ def capture_offer_card(
                 card.scroll_into_view_if_needed()
                 page.wait_for_timeout(1500)
                 card.screenshot(path=str(out_path))
-                log_step(f"captured offer card from /ofertas page {page_no}")
+                log_step(f"captured offer card from {'search' if source == 'search' else '/ofertas'} page {page_no}")
                 return out_path
 
             where = f"search '{term}'" if source == "search" else "/ofertas"
