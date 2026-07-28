@@ -5,10 +5,10 @@ Two scheduled workflows, no server to host:
 | Workflow | Schedule | What it does |
 | --- | --- | --- |
 | [`ingest.yml`](.github/workflows/ingest.yml) | daily, 11:00 UTC (08:00 ART) | scrape, snapshot prices, Slack summary |
-| [`post.yml`](.github/workflows/post.yml) | hourly | publish exactly one tweet |
+| [`post.yml`](.github/workflows/post.yml) | every 3 hours | publish exactly one tweet |
 
-`post` always sends one tweet, so the cron *is* the rate limit — hourly means
-24 tweets/day.
+`post` always sends one tweet, so the cron *is* the rate limit — every 3 hours
+means 8 tweets/day.
 
 ---
 
@@ -150,13 +150,13 @@ uses `/ofertas`, which needs no login at all. If you want search coverage, run
 `./run ingest --source search` locally against Supabase and let the scheduled
 runs top up from `/ofertas`.
 
-**Hourly posting is aggressive.** 24 affiliate links a day from one account is
-a lot; X may rate-limit or flag it, and the cookies are a personal session, not
-an API key. If posts start failing with 403, that's the first thing to look at.
-Dropping to `0 */3 * * *` (8/day) is a calmer starting point — the queue is
-deep enough either way.
+**Posting cadence.** 8 tweets/day from personal session cookies is a reasonable
+load. If posts start failing with 403, the cookies expired — re-export them. Go
+gentler by widening the cron (`0 */6 * * *` = 4/day) rather than by touching
+the code; `post` sends one either way.
 
 **The queue drains.** `repost_cooldown_days` (21) holds a product back after
-posting, and 24 posts/day burns through a 296-deep queue in under two weeks.
-Keep an eye on `./run offers` depth; widen keywords or lower
-`min_discount_pct` if it thins out.
+posting, and at 8/day a 296-deep queue lasts about five weeks. The 60%+ tier is
+much thinner — 10 right now, so roughly a day — which is why runs tell you when
+they've dropped below `preferred_min_discount_pct`. Seeing that regularly means
+it's time to widen keywords, scrape more pages, or accept a lower tier.

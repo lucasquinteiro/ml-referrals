@@ -90,8 +90,14 @@ _DEFAULTS: dict[str, Any] = {
     "min_products_expected": 20,
 
     # ---- what counts as an offer worth posting ----------------------------
-    # Minimum discount MercadoLibre itself advertises on the card.
+    # Minimum discount MercadoLibre itself advertises on the card. Anything
+    # below this never gets posted at all.
     "min_discount_pct": 20,
+    # The tier you actually want to be posting. The queue is always ordered
+    # best-discount-first, so this changes nothing about *what* gets picked —
+    # it's the line below which runs say so, telling you the good stock ran out
+    # and it's time to re-ingest. 0 disables the notice.
+    "preferred_min_discount_pct": 60,
     # Price band, in ARS. 0 = no bound.
     "min_price": 0,
     "max_price": 0,

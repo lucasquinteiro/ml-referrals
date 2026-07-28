@@ -80,6 +80,7 @@
   "pages_per_run": 12,
   "delay_between_pages_sec": 2.5,
   "min_discount_pct": 20,
+  "preferred_min_discount_pct": 60,
   "min_price": 0,
   "max_price": 0,
   "min_rating": 0.0,

@@ -403,6 +403,32 @@ def _show(product: Any, link: str, text: str, header: str, *, source: bool = Fal
     print(text)
 
 
+def _report_tier(deals: list[Any], settings: Any) -> None:
+    """Say whether the pick is in the tier you actually want to be posting.
+
+    The queue is always ordered best-discount-first, so the top item is by
+    definition the biggest discount available — this only makes the *quality*
+    of that top item legible, so a run that has slipped to picking leftovers is
+    obvious instead of looking identical to a good one.
+    """
+    from lib.log import log_step, log_warn
+
+    preferred = settings.get("preferred_min_discount_pct") or 0
+    if not preferred or not deals:
+        return
+
+    in_tier = [p for p in deals if (p.discount_pct or 0) >= preferred]
+    best = deals[0].discount_pct or 0
+
+    if in_tier:
+        log_step(f"{len(in_tier)} offer(s) at {preferred}%+ — posting from that tier")
+    else:
+        log_warn(
+            f"no {preferred}%+ offers left; best available is {best}%. "
+            "Run `./run ingest` to refresh — new big discounts jump the queue."
+        )
+
+
 def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
     """Show exactly what the next `./run post` would publish. Writes nothing."""
     from lib.log import log_ok, log_stage, log_step, log_warn
@@ -421,6 +447,7 @@ def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
             return 0
 
         log_stage(f"{len(deals)} offer(s) in the queue")
+        _report_tier(deals, settings)
 
         links = _resolve_links(deals[:1], settings, store, allow_untagged=True)
         if links is None:
@@ -639,6 +666,7 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
             log_warn("No offer cleared the thresholds. Lower min_discount_pct in "
                      "config.json, or widen the keyword list.")
             return 0
+        _report_tier(deals, settings)
 
         product = deals[0]
         links = _resolve_links([product], settings, store,

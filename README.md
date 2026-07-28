@@ -232,6 +232,20 @@ https://www.mercadolibre.com.ar/monitor-led-27-...
   ✓ simulation only — nothing posted, nothing written to the store
 ```
 
+**Biggest discount first, always.** The queue is ordered by discount, so `post`
+takes the best offer available and a freshly-scraped 70% deal jumps ahead of
+everything. When those run out it keeps working down the list rather than
+stalling — and says so:
+
+```
+! no 60%+ offers left; best available is 59%.
+  Run `./run ingest` to refresh — new big discounts jump the queue.
+```
+
+That threshold is `preferred_min_discount_pct` (default 60). It changes nothing
+about *what* gets picked — it's purely the line below which runs tell you the
+good stock ran out. Set it to 0 to silence the notice.
+
 **Posting is always one tweet per run.** There's no `--limit` on `post`: a burst
 of affiliate links reads as spam, and one at a time keeps every publish
 reviewable. Run it again for the next one — the queue is ordered by discount,
@@ -391,7 +405,7 @@ Two scheduled workflows, no server needed:
 | Workflow | Schedule | What it does |
 | --- | --- | --- |
 | [`ingest.yml`](.github/workflows/ingest.yml) | daily, 11:00 UTC | scrape, snapshot prices, Slack summary |
-| [`post.yml`](.github/workflows/post.yml) | hourly | publish exactly one tweet |
+| [`post.yml`](.github/workflows/post.yml) | every 3 hours | publish exactly one tweet |
 
 `post` always sends one tweet, so the cron is the rate limit.
 
