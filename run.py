@@ -68,6 +68,8 @@ def _parse_args() -> argparse.Namespace:
                      help="ofertas (default, no login) or search (needs ./run login)")
     ing.add_argument("--no-slack", action="store_true",
                      help="Skip the Slack summary even if SLACK_WEBHOOK_URL is set")
+    ing.add_argument("--no-links", action="store_true",
+                     help="Skip pre-minting affiliate links for this run")
 
     lg = sub.add_parser(
         "login",
@@ -182,13 +184,29 @@ def _scrape_and_match(
             "drop --source search to use /ofertas, which needs no login."
         )
 
-    with MercadoLibreScraper(
-        settings.site, headless=not headed, delay_sec=settings.delay_between_pages_sec
-    ) as scraper:
-        if source == "search":
+    if source == "search":
+        # Search sits behind the login wall plus a JS challenge; only a real
+        # browser gets through.
+        with MercadoLibreScraper(
+            settings.site, headless=not headed,
+            delay_sec=settings.delay_between_pages_sec,
+        ) as scraper:
             products = scraper.scrape_search([k.term for k in keywords], pages=pages)
-        else:
+    elif headed:
+        with MercadoLibreScraper(
+            settings.site, headless=False,
+            delay_sec=settings.delay_between_pages_sec,
+        ) as scraper:
             products = scraper.scrape_offers(pages=pages)
+    else:
+        # /ofertas is server-rendered, so no browser is needed — ~3x faster and
+        # it lets the CI job skip installing Chromium entirely.
+        from scraper import scrape_offers_http
+
+        products = scrape_offers_http(
+            settings.site, pages=pages,
+            delay_sec=settings.delay_between_pages_sec,
+        )
 
     log_ok(f"scraped {len(products)} products")
     if len(products) < settings.min_products_expected:
@@ -207,6 +225,64 @@ def _scrape_and_match(
 # --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
+
+
+def _prefetch_links(store: Any, settings: Any, deals: list[Any]) -> int:
+    """Mint affiliate links for this run's best offers, in one batch.
+
+    Doing it here rather than at post time means the browser (if the HTTP path
+    is rejected) starts once a day instead of once a tweet, and posting becomes
+    pure HTTP. The endpoint accepts a list, so the whole run is one call.
+    """
+    from affiliate_api import AffiliateAPIError, NotAnAffiliateError, create_links
+    from lib.log import log_err, log_ok, log_step, log_warn
+
+    aff = settings.affiliate or {}
+    tag = settings.affiliate_tag
+    if not tag or not aff.get("use_link_builder", True):
+        return 0
+
+    floor = aff.get("min_discount_for_link", 40)
+    cap = aff.get("max_links_per_ingest", 40)
+    wanted = [p for p in deals if (p.discount_pct or 0) >= floor][:cap]
+    if not wanted:
+        log_step(f"no offers at {floor}%+ to mint links for")
+        return 0
+
+    cached = store.get_affiliate_links([p.product_id for p in wanted], tag)
+    missing = [p for p in wanted if p.product_id not in cached]
+    if not missing:
+        log_step(f"{len(wanted)} link(s) already cached")
+        return 0
+
+    log_step(f"minting {len(missing)} affiliate link(s) at {floor}%+ off")
+    try:
+        generated = create_links(
+            [p.url for p in missing], site=settings.site, tag=tag,
+            allow_browser=aff.get("allow_browser_fallback", True),
+        )
+    except NotAnAffiliateError as e:
+        log_err(str(e))
+        return 0
+    except AffiliateAPIError as e:
+        log_warn(f"link minting unavailable ({e}); posting will fall back to "
+                 "matt_word/matt_tool links")
+        return 0
+
+    by_url = {p.url: p for p in missing}
+    saved = 0
+    for url, pair in generated.items():
+        product = by_url.get(url)
+        if not product:
+            continue
+        store.save_affiliate_link(
+            product_id=product.product_id, product_url=product.url,
+            short_url=pair["short"], full_url=pair["full"], tag=tag,
+        )
+        saved += 1
+    if saved:
+        log_ok(f"cached {saved} affiliate link(s) — posting won't need to mint any")
+    return saved
 
 
 def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
@@ -236,6 +312,10 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
         n = store.record_snapshots(to_store, run_id)
         store.finish_run(run_id, products_seen=len(products), offers_matched=len(matched))
         log_ok(f"recorded {n} snapshots (run #{run_id})")
+
+        if not args.no_links:
+            log_stage("Pre-minting affiliate links")
+            _prefetch_links(store, settings, off.filter_offers(matched, settings))
 
         # Queue depth reflects everything stored, not just this run's haul.
         queue_total = len(_select_deals(store, settings))
@@ -338,7 +418,8 @@ def _resolve_links(
 
             try:
                 generated = create_links(
-                    [p.url for p in missing], site=settings.site, tag=tag
+                    [p.url for p in missing], site=settings.site, tag=tag,
+                    allow_browser=aff_cfg.get("allow_browser_fallback", True),
                 )
                 by_url = {p.url: p for p in missing}
                 for url, pair in generated.items():
@@ -382,6 +463,33 @@ def _render(product: Any, link: str, settings: Any, *, use_llm: bool) -> str:
     import tweets as tw
 
     return tw.build_tweet(product, link, settings, deterministic=not use_llm)
+
+
+def _resolve_image(product: Any, settings: Any):
+    """Pick the picture for a tweet. Returns (image_url, local_path).
+
+    "screenshot" mode grabs Mercado Libre's own offer card, which is the look
+    people recognise — but it costs a browser and only works while the offer is
+    still on /ofertas, so it degrades to the product photo rather than failing.
+    """
+    from lib.log import log_step
+
+    mode = settings.get("tweet_image_mode", "product")
+    if mode == "none":
+        return None, None
+
+    if mode == "screenshot":
+        import card as card_mod
+        import screenshot as shot_mod
+
+        raw = cfg.STATE_DIR / "shots" / f"{product.product_id}.png"
+        got = shot_mod.capture_offer_card(product, raw, site=settings.site)
+        if got:
+            composed = cfg.STATE_DIR / "shots" / f"{product.product_id}-card.png"
+            return None, str(card_mod.compose_screenshot(got, composed, product=product))
+        log_step("falling back to the product photo")
+
+    return (product.image or None), None
 
 
 def _show(product: Any, link: str, text: str, header: str, *, source: bool = False) -> None:
@@ -680,10 +788,11 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
         _show(product, link, text, "DRY RUN" if args.dry_run else "POSTING")
 
         print()
-        image_url = product.image if settings.get("tweet_include_image", True) else None
+        image_url, image_path = _resolve_image(product, settings)
         try:
             tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR,
-                                     dry_run=args.dry_run).post(text, image_url=image_url)
+                                     dry_run=args.dry_run).post(
+                text, image_url=image_url, image_path=image_path)
         except TwitterPostError as e:
             log_err(f"post failed: {e}")
             return 1

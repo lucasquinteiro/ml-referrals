@@ -3,9 +3,9 @@ name: post
 # Publish one tweet per run, every 3 hours. `post` always sends exactly one,
 # so the schedule is the rate limit: 8 tweets/day at this cadence.
 #
-# Reads whatever the daily ingest stored — it never scrapes. config.json's
-# max_data_age_hours must stay above 24 or the later runs of the day will
-# refuse to post on stale prices.
+# Reads whatever the daily ingest stored — it never scrapes, and it never mints
+# links: ingest does that in one batch. config.json's max_data_age_hours must
+# stay above 24 or the later runs of the day will refuse to post on stale prices.
 on:
   schedule:
     - cron: "0 */3 * * *"   # every 3 hours (UTC) = 8 tweets/day
@@ -34,10 +34,10 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          # Chromium is needed to mint meli.la links through the link builder.
-          python -m playwright install --with-deps chromium
+        # No Chromium here: the daily ingest pre-mints affiliate links, so this
+        # job is pure HTTP. Set tweet_image_mode to "screenshot" and you'd need
+        # it back — that mode is meant for local runs.
+        run: pip install -r requirements.txt
 
       - name: Post
         env:

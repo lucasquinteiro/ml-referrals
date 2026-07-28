@@ -126,6 +126,131 @@ class BlockedError(RuntimeError):
     """MercadoLibre served a login wall or bot challenge instead of the page."""
 
 
+# --------------------------------------------------------------------------
+# HTTP scraping (no browser)
+# --------------------------------------------------------------------------
+#
+# /ofertas is server-rendered: a plain GET returns the full card markup, prices
+# and all. So the default ingest needs no browser at all — roughly 3x faster
+# than driving Chromium, and it lets the CI job skip installing it.
+#
+# Search still needs the browser: it sits behind a login wall plus a JS
+# challenge, neither of which a bare HTTP client gets through.
+
+_HTTP_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+}
+
+
+def _text(node: Any, selector: str) -> str:
+    found = node.select_one(selector)
+    return re.sub(r"\s+", " ", found.get_text(" ", strip=True)) if found else ""
+
+
+def _amount(node: Any, selector: str) -> Optional[float]:
+    """Read a price the same way the in-page extractor does.
+
+    aria-label carries the raw number ("Antes: 45999 pesos argentinos"), which
+    avoids parsing locale-specific thousand separators out of the visible text.
+    """
+    el = node.select_one(selector)
+    if el is None:
+        return None
+
+    label = el.get("aria-label") or ""
+    m = re.search(r"(\d+)(?:\D+(\d{1,2})\s*centavos)?", re.sub(r"^[^\d]*", "", label))
+    if m:
+        return float(f"{m.group(1)}.{m.group(2)}") if m.group(2) else float(m.group(1))
+
+    fraction = el.select_one(".andes-money-amount__fraction")
+    if not fraction:
+        return None
+    whole = re.sub(r"\D", "", fraction.get_text())
+    if not whole:
+        return None
+    cents = el.select_one(".andes-money-amount__cents")
+    return float(f"{whole}.{re.sub(r'\\D', '', cents.get_text())}") if cents else float(whole)
+
+
+def _parse_card(card: Any) -> Optional[dict[str, Any]]:
+    link = card.select_one("a.poly-component__title")
+    if not link or not link.get("href"):
+        return None
+
+    pill = _text(card, ".poly-price__label .polylabel-pill")
+    discount = re.search(r"(\d+)\s*%", pill)
+
+    review = _text(card, ".poly-component__review-compacted")
+    rating = re.match(r"([\d.,]+)", review)
+    sold = re.search(r"\|\s*(.+)$", review)
+
+    img = card.select_one("img.poly-component__picture")
+    shipping = _text(card, ".poly-component__shipping")
+
+    return {
+        "title": re.sub(r"\s+", " ", link.get_text(strip=True)),
+        "url": link["href"],
+        "price": _amount(card, ".poly-price__current .andes-money-amount"),
+        "original_price": _amount(card, "s.andes-money-amount--previous"),
+        "discount_pct": int(discount.group(1)) if discount else None,
+        "seller": _text(card, ".poly-component__seller"),
+        "rating": float(rating.group(1).replace(",", ".")) if rating else None,
+        "sold": sold.group(1) if sold else "",
+        "image": (img.get("src") or img.get("data-src") or "") if img else "",
+        "badge": _text(card, ".poly-component__poly-label span"),
+        "installments": _text(card, ".poly-price__installments"),
+        "free_shipping": bool(re.search(r"gratis", shipping, re.I)),
+    }
+
+
+def scrape_offers_http(
+    site: str, *, pages: int = 12, delay_sec: float = 1.5
+) -> list[Product]:
+    """Crawl /ofertas over plain HTTP. Same output as the browser scraper."""
+    import httpx
+    from bs4 import BeautifulSoup
+
+    site = site.rstrip("/")
+    seen: dict[str, Product] = {}
+
+    with httpx.Client(timeout=30, headers=_HTTP_HEADERS, follow_redirects=True) as client:
+        for n in range(1, pages + 1):
+            url = f"{site}/ofertas" if n == 1 else f"{site}/ofertas?page={n}"
+            try:
+                resp = client.get(url)
+            except Exception as e:  # noqa: BLE001 - one bad page shouldn't kill the run
+                log_err(f"page {n} failed: {type(e).__name__}: {e}")
+                continue
+
+            if any(marker in str(resp.url) for marker in _WALL_MARKERS):
+                raise BlockedError(
+                    f"MercadoLibre served a wall instead of {url} (landed on "
+                    f"{resp.url}). /ofertas may now require a login too."
+                )
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            cards = soup.select("div.andes-card.poly-card, li.andes-card")
+            batch = [p for p in (_to_product(raw) for raw in
+                                 (_parse_card(c) for c in cards) if raw) if p]
+
+            new = 0
+            for product in batch:
+                if product.product_id not in seen:
+                    seen[product.product_id] = product
+                    new += 1
+            log_step(f"page {n}: {len(batch)} cards, {new} new")
+
+            if not batch or new == 0:
+                log_step(f"page {n} added nothing new; stopping pagination")
+                break
+            if n < pages:
+                time.sleep(delay_sec)
+
+    return list(seen.values())
+
+
 def _canonical_url(url: str) -> str:
     """Strip tracking/session query params and fragments off a card link."""
     return url.split("#", 1)[0].split("?", 1)[0]

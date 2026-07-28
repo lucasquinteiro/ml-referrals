@@ -92,11 +92,14 @@
     "use_link_builder": true,
     "extra_params": {
       "forceInApp": "true"
-    }
+    },
+    "min_discount_for_link": 40,
+    "max_links_per_ingest": 40,
+    "allow_browser_fallback": true
   },
   "use_llm_for_copy": true,
   "tweet_language": "es-AR",
-  "tweet_include_image": true,
+  "tweet_image_mode": "product",
   "tweet_hashtags": [],
   "tweet_disclosure": "",
   "store": "supabase",

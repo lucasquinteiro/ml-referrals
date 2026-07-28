@@ -2,8 +2,10 @@
 #   python3 -m venv .venv
 #   .venv/bin/pip install -r requirements.txt
 #   .venv/bin/python -m playwright install chromium
-playwright>=1.44
+playwright>=1.44      # search scraping, screenshots, link builder
 httpx
+beautifulsoup4        # parsing /ofertas over plain HTTP (no browser)
+Pillow                # composing the offer-card image
 python-dotenv
 openai>=1.0.0        # tweet copy (Groq via the OpenAI-compatible endpoint)
 supabase>=2.0.0      # only when store = "supabase"

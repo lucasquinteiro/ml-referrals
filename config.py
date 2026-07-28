@@ -123,6 +123,16 @@ _DEFAULTS: dict[str, Any] = {
         # signed ref=) when a session is available. Falls back to the param
         # form below whenever it isn't.
         "use_link_builder": True,
+        # Mint links during ingest, for offers at or above this discount. The
+        # endpoint takes a batch, so one call covers the whole run — and then
+        # posting needs no link generation at all.
+        "min_discount_for_link": 40,
+        # Ceiling on one ingest's batch, so a very good scraping day can't mint
+        # hundreds of links in your affiliate dashboard.
+        "max_links_per_ingest": 40,
+        # createLink is tried over plain HTTP first. This allows falling back
+        # to driving a real browser when the session isn't accepted that way.
+        "allow_browser_fallback": True,
         # Extra query params appended to every affiliate link (fallback form).
         "extra_params": {"forceInApp": "true"},
     },
@@ -134,10 +144,14 @@ _DEFAULTS: dict[str, Any] = {
     # is configured or the call fails.
     "use_llm_for_copy": True,
     "tweet_language": "es-AR",
-    # Attach the product photo as a native upload. The link's own preview only
-    # yields MercadoLibre's small `summary` card; an uploaded image renders
-    # full width. Falls back to text-only if the upload fails.
-    "tweet_include_image": True,
+    # What picture to attach:
+    #   "product"    the product photo, uploaded natively (no browser)
+    #   "screenshot" MercadoLibre's own offer card, captured from /ofertas —
+    #                their real typography and layout, but it needs Chromium
+    #                and only works while the offer is still listed there
+    #   "none"       text only
+    # Any failure falls back down this list rather than losing the tweet.
+    "tweet_image_mode": "product",
     # Appended to every tweet (kept short — links eat 23 chars).
     "tweet_hashtags": ["#Ofertas"],
     # Affiliate-disclosure suffix. Required by most jurisdictions and by X's

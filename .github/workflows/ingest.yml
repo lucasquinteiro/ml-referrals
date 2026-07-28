@@ -36,6 +36,9 @@ jobs:
           cache: pip
 
       - name: Install dependencies
+        # /ofertas is server-rendered, so scraping needs no browser. Chromium is
+        # here only as the fallback transport for minting affiliate links, when
+        # the plain-HTTP path isn't accepted.
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
@@ -45,6 +48,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Minting links during ingest is what keeps the post job browser-free.
+          ML_AFFILIATE_TAG: ${{ secrets.ML_AFFILIATE_TAG }}
+          ML_AFFILIATE_TOOL_ID: ${{ secrets.ML_AFFILIATE_TOOL_ID }}
+          ML_AFFILIATE_STORAGE_STATE: ${{ secrets.ML_AFFILIATE_STORAGE_STATE }}
           # No Mercado Libre session here on purpose: this scrapes /ofertas,
           # which is public. Search would need one, but a logged-in session on
           # a datacenter IP is exactly what gets an account flagged.

@@ -280,7 +280,26 @@ class TwitterPoster:
             if not content:
                 log_warn(f"could not fetch product image: {url}")
                 return None
+            return self._upload_bytes(content, mime, timeout=timeout)
+        except Exception as e:  # noqa: BLE001 - text-only is an acceptable outcome
+            log_warn(f"image fetch failed ({type(e).__name__}: {e})")
+            return None
 
+    def upload_file(self, path: str, *, timeout: float = 30.0) -> Optional[str]:
+        """Upload an image already on disk — e.g. a composed offer card."""
+        if self.dry_run:
+            return None
+        try:
+            content = Path(path).read_bytes()
+        except Exception as e:  # noqa: BLE001
+            log_warn(f"could not read {path} ({type(e).__name__}: {e})")
+            return None
+        return self._upload_bytes(content, "image/png", timeout=timeout)
+
+    def _upload_bytes(self, content: bytes, mime: str, *,
+                      timeout: float = 30.0) -> Optional[str]:
+        """POST image bytes to X's media endpoint. None on any failure."""
+        try:
             with httpx.Client(timeout=timeout) as c:
                 r = c.post(
                     "https://upload.twitter.com/1.1/media/upload.json",
@@ -293,7 +312,7 @@ class TwitterPoster:
                 return None
             media_id = str(r.json().get("media_id_string") or "")
             if media_id:
-                log_step(f"uploaded product image ({len(content) // 1024} KB)")
+                log_step(f"uploaded image ({len(content) // 1024} KB)")
             return media_id or None
         except Exception as e:  # noqa: BLE001 - text-only is an acceptable outcome
             log_warn(f"media upload failed ({type(e).__name__}: {e})")
@@ -320,20 +339,23 @@ class TwitterPoster:
         with httpx.Client(timeout=30) as c:
             return c.post(url, headers=self._headers(), json=payload)
 
-    def post(self, text: str, *, image_url: Optional[str] = None) -> Optional[str]:
+    def post(self, text: str, *, image_url: Optional[str] = None,
+             image_path: Optional[str] = None) -> Optional[str]:
         """Publish `text`, optionally with a product image attached.
 
         A native upload gives a full-width photo; relying on the link's own
         preview only yields Mercado Libre's small `summary` card.
         """
         if self.dry_run:
-            extra = f"\n[with image: {image_url}]" if image_url else ""
+            src = image_path or image_url
+            extra = f"\n[with image: {src}]" if src else ""
             log_step(f"[dry-run] would tweet:\n{text}{extra}")
             return None
 
         media_ids: list[str] = []
-        if image_url:
-            media_id = self.upload_image(image_url)
+        if image_path or image_url:
+            media_id = (self.upload_file(image_path) if image_path
+                        else self.upload_image(image_url))
             if media_id:
                 media_ids.append(media_id)
 

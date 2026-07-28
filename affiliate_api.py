@@ -49,8 +49,11 @@ async ({path, urls, tag}) => {
     },
     body: JSON.stringify({urls, tag}),
   });
-  let body = null;
-  try { body = await r.json(); } catch (e) { body = {parseError: await r.text()}; }
+  // Read the stream exactly once — calling .json() then .text() on the same
+  // Response throws "body stream already read" and loses the real error.
+  const raw = await r.text();
+  let body;
+  try { body = JSON.parse(raw); } catch (e) { body = {parseError: raw.slice(0, 400)}; }
   return {httpStatus: r.status, body};
 }
 """
@@ -205,43 +208,136 @@ class AffiliateLinkBuilder:
             )
 
         entries = body.get("urls") or []
-        out: dict[str, dict[str, str]] = {}
-        for i, entry in enumerate(entries):
-            # Success entries name the input as `origin_url`; error entries use
-            # `entity`. Fall back to position, since the response preserves the
-            # order of the request.
-            source = (
-                entry.get("origin_url")
-                or entry.get("entity")
-                or (urls[i] if i < len(urls) else "")
-            )
-            if entry.get("error_code") or entry.get("message"):
-                msg = entry.get("message", "")
-                # 109 = the session's account isn't an affiliate. Worth failing
-                # loudly: every link in the batch will fail the same way.
-                if entry.get("error_code") == 109 or "not found affiliate user" in msg:
-                    raise NotAnAffiliateError(
-                        f"Mercado Libre says this account isn't an affiliate ({msg}).\n"
-                        "  The saved session is for a different account than the one "
-                        "enrolled in the Programa de Afiliados.\n"
-                        "  Fix: run `./run login --role affiliate` with the enrolled account."
-                    )
-                log_warn(f"createLink failed for {source[:60]}: {msg}")
-                continue
-            pair = _extract(entry, source)
-            if pair:
-                out[source] = pair
+        out = _parse_response(body, urls)
 
         if entries and not out:
             log_warn(f"createLink returned no usable links: {str(body)[:200]}")
         return out
 
 
-def create_links(
+def _parse_response(body: dict[str, Any], urls: list[str]) -> dict[str, dict[str, str]]:
+    """Shared result handling for both transports."""
+    out: dict[str, dict[str, str]] = {}
+    for i, entry in enumerate(body.get("urls") or []):
+        source = (
+            entry.get("origin_url")
+            or entry.get("entity")
+            or (urls[i] if i < len(urls) else "")
+        )
+        if entry.get("error_code") or entry.get("message"):
+            msg = entry.get("message", "")
+            if entry.get("error_code") == 109 or "not found affiliate user" in msg:
+                raise NotAnAffiliateError(
+                    f"Mercado Libre says this account isn't an affiliate ({msg}).\n"
+                    "  The saved session is for a different account than the one "
+                    "enrolled in the Programa de Afiliados.\n"
+                    "  Fix: run `./run login --role affiliate` with the enrolled account."
+                )
+            log_warn(f"createLink failed for {source[:60]}: {msg}")
+            continue
+        pair = _extract(entry, source)
+        if pair:
+            out[source] = pair
+    return out
+
+
+def create_links_http(
     urls: list[str], *, site: str, tag: str
+) -> Optional[dict[str, dict[str, str]]]:
+    """Mint links with a plain HTTP client using the saved session cookies.
+
+    createLink is an ordinary JSON POST, so a browser shouldn't be required —
+    this is the cheap path. Returns None (rather than raising) when the session
+    isn't accepted, so the caller can fall back to driving a real browser.
+    """
+    import json as _json
+    import re as _re
+
+    import httpx
+
+    import auth
+
+    state_path = auth.storage_state_path(auth.AFFILIATE)
+    if not state_path:
+        return None
+
+    try:
+        cookies = {
+            c["name"]: c["value"]
+            for c in _json.loads(state_path.read_text(encoding="utf-8")).get("cookies", [])
+        }
+    except Exception:  # noqa: BLE001 - unreadable session, let the browser try
+        return None
+
+    site = site.rstrip("/")
+    try:
+        with httpx.Client(
+            timeout=30, headers={"User-Agent": UA, "Accept-Language": "es-AR,es;q=0.9"},
+            cookies=cookies, follow_redirects=True,
+        ) as client:
+            page = client.get(site + LINKBUILDER_URL)
+            # A logged-out session is bounced to the login host; the CSRF token
+            # we'd scrape from that page is worthless.
+            if "/lgz/" in str(page.url) or "login" in str(page.url):
+                log_step("affiliate session not accepted over HTTP; trying a browser")
+                return None
+
+            m = _re.search(r'<meta name="csrf-token"[^>]*content="([^"]+)"', page.text)
+            if not m:
+                return None
+
+            resp = client.post(
+                site + CREATE_LINK_PATH,
+                headers={
+                    "content-type": "application/json",
+                    "accept": "application/json, text/plain, */*",
+                    "x-csrf-token": m.group(1),
+                    "origin": site,
+                    "referer": site + LINKBUILDER_URL,
+                },
+                json={"urls": urls, "tag": tag},
+            )
+            if resp.status_code in (401, 403):
+                log_step(f"createLink over HTTP returned {resp.status_code}; "
+                         "falling back to a browser")
+                return None
+            if resp.status_code != 200:
+                raise AffiliateAPIError(
+                    f"createLink returned HTTP {resp.status_code}: {resp.text[:250]}"
+                )
+            return _parse_response(resp.json(), urls)
+    except NotAnAffiliateError:
+        raise
+    except AffiliateAPIError:
+        raise
+    except Exception as e:  # noqa: BLE001 - any transport problem: try the browser
+        log_warn(f"createLink over HTTP failed ({type(e).__name__}: {e}); "
+                 "falling back to a browser")
+        return None
+
+
+def create_links(
+    urls: list[str], *, site: str, tag: str, allow_browser: bool = True
 ) -> dict[str, dict[str, str]]:
-    """One-shot convenience wrapper around AffiliateLinkBuilder."""
+    """Mint affiliate links, cheapest transport first.
+
+    Plain HTTP needs no Chromium and takes about a second. The browser path is
+    only there because it's the one we've seen work end to end; if HTTP proves
+    reliable with a fresh session, `allow_browser=False` makes that permanent.
+    """
+    links = create_links_http(urls, site=site, tag=tag)
+    if links is not None:
+        log_step(f"createLink [http]: {len(links)}/{len(urls)} link(s) generated")
+        return links
+
+    if not allow_browser:
+        raise AffiliateAPIError(
+            "createLink over HTTP was rejected and the browser fallback is "
+            "disabled. Re-run `./run login --role affiliate` to refresh the "
+            "session, or set affiliate.allow_browser_fallback back to true."
+        )
+
     with AffiliateLinkBuilder(site, tag) as builder:
         links = builder.create(urls)
-    log_step(f"createLink: {len(links)}/{len(urls)} link(s) generated")
+    log_step(f"createLink [browser]: {len(links)}/{len(urls)} link(s) generated")
     return links
