@@ -96,6 +96,7 @@
   },
   "use_llm_for_copy": true,
   "tweet_language": "es-AR",
+  "tweet_include_image": true,
   "tweet_hashtags": [],
   "tweet_disclosure": "",
   "store": "supabase",

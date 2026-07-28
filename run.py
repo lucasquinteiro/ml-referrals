@@ -400,6 +400,8 @@ def _show(product: Any, link: str, text: str, header: str, *, source: bool = Fal
           f"{tw.tweet_length(text, link)}/{tw.TWEET_LIMIT} chars\033[0m")
     if source:
         print(f"\033[2mproducto: {product.url}\033[0m")
+        if product.image:
+            print(f"\033[2mimagen:   {product.image}\033[0m")
     print(text)
 
 
@@ -678,9 +680,10 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
         _show(product, link, text, "DRY RUN" if args.dry_run else "POSTING")
 
         print()
+        image_url = product.image if settings.get("tweet_include_image", True) else None
         try:
             tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR,
-                                     dry_run=args.dry_run).post(text)
+                                     dry_run=args.dry_run).post(text, image_url=image_url)
         except TwitterPostError as e:
             log_err(f"post failed: {e}")
             return 1

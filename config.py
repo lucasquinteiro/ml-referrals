@@ -134,6 +134,10 @@ _DEFAULTS: dict[str, Any] = {
     # is configured or the call fails.
     "use_llm_for_copy": True,
     "tweet_language": "es-AR",
+    # Attach the product photo as a native upload. The link's own preview only
+    # yields MercadoLibre's small `summary` card; an uploaded image renders
+    # full width. Falls back to text-only if the upload fails.
+    "tweet_include_image": True,
     # Appended to every tweet (kept short — links eat 23 chars).
     "tweet_hashtags": ["#Ofertas"],
     # Affiliate-disclosure suffix. Required by most jurisdictions and by X's

@@ -389,6 +389,15 @@ otherwise (templates always work — the fallback is automatic, not a failure).
 Length is budgeted the way X counts it: any URL weighs 23 characters regardless
 of its real length.
 
+**Product images.** `tweet_include_image` (default on) uploads the product photo
+natively, so the tweet renders a full-width picture. Relying on the link's own
+preview instead only gets you Mercado Libre's `summary` card — a small square
+thumbnail — because that's the card type their pages declare, and we can't
+change their meta tags. The upload uses the `2X` variant of the scraped
+thumbnail (~3x the pixels), falling back to the original if that variant 404s,
+and to text-only if the upload fails outright: a tweet with no picture beats no
+tweet.
+
 `tweet_disclosure` appends an affiliate disclosure to every tweet. Keep it —
 disclosing affiliate links is required by X's rules and by consumer-protection
 law in most jurisdictions.

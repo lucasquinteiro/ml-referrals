@@ -77,6 +77,18 @@ DEFAULT_FEATURES: dict[str, bool] = {
 }
 
 
+def _upsized(url: str) -> str:
+    """MercadoLibre encodes the render size in the filename; the 2X variant is
+    roughly 3x the pixels for the same image. Returns the original unchanged
+    when it's already 2X or doesn't look like an ML image URL."""
+    if not url or "_2X_" in url:
+        return url
+    for marker in ("D_NQ_NP_", "D_Q_NP_"):
+        if marker in url:
+            return url.replace(marker, marker + "2X_", 1)
+    return url
+
+
 class TwitterPostError(RuntimeError):
     pass
 
@@ -217,12 +229,56 @@ class TwitterPoster:
             "referer": "https://x.com/home",
         }
 
-    def _post_once(self, text: str, features: dict[str, bool]) -> httpx.Response:
+    # ---- media -----------------------------------------------------------
+
+    def upload_image(self, url: str, *, timeout: float = 30.0) -> Optional[str]:
+        """Fetch an image and upload it to X. Returns a media id, or None.
+
+        Never raises: a tweet with no picture is much better than no tweet, so
+        every failure here degrades to text-only.
+        """
+        if self.dry_run:
+            return None
+        try:
+            with httpx.Client(timeout=timeout, headers={"User-Agent": UA}) as c:
+                img = c.get(_upsized(url))
+                if img.status_code != 200 or not img.content:
+                    img = c.get(url)  # the upsized variant may not exist
+                if img.status_code != 200 or not img.content:
+                    log_warn(f"could not fetch product image ({img.status_code})")
+                    return None
+                content = img.content
+                mime = img.headers.get("content-type", "image/jpeg").split(";")[0]
+
+            with httpx.Client(timeout=timeout) as c:
+                r = c.post(
+                    "https://upload.twitter.com/1.1/media/upload.json",
+                    headers={k: v for k, v in self._headers().items()
+                             if k != "content-type"},
+                    files={"media": ("image", content, mime)},
+                )
+            if r.status_code not in (200, 201):
+                log_warn(f"media upload failed: HTTP {r.status_code} {r.text[:200]}")
+                return None
+            media_id = str(r.json().get("media_id_string") or "")
+            if media_id:
+                log_step(f"uploaded product image ({len(content) // 1024} KB)")
+            return media_id or None
+        except Exception as e:  # noqa: BLE001 - text-only is an acceptable outcome
+            log_warn(f"media upload failed ({type(e).__name__}: {e})")
+            return None
+
+    # ---- posting ---------------------------------------------------------
+
+    def _post_once(
+        self, text: str, features: dict[str, bool], media_ids: Optional[list[str]] = None
+    ) -> httpx.Response:
+        entities = [{"media_id": m, "tagged_users": []} for m in (media_ids or [])]
         payload = {
             "variables": {
                 "tweet_text": text,
                 "dark_request": False,
-                "media": {"media_entities": [], "possibly_sensitive": False},
+                "media": {"media_entities": entities, "possibly_sensitive": False},
                 "semantic_annotation_ids": [],
                 "disallowed_reply_options": None,
             },
@@ -233,19 +289,30 @@ class TwitterPoster:
         with httpx.Client(timeout=30) as c:
             return c.post(url, headers=self._headers(), json=payload)
 
-    def post(self, text: str) -> Optional[str]:
-        """Publish `text`. Returns the new tweet id, or None on a dry run."""
+    def post(self, text: str, *, image_url: Optional[str] = None) -> Optional[str]:
+        """Publish `text`, optionally with a product image attached.
+
+        A native upload gives a full-width photo; relying on the link's own
+        preview only yields Mercado Libre's small `summary` card.
+        """
         if self.dry_run:
-            log_step(f"[dry-run] would tweet:\n{text}")
+            extra = f"\n[with image: {image_url}]" if image_url else ""
+            log_step(f"[dry-run] would tweet:\n{text}{extra}")
             return None
 
+        media_ids: list[str] = []
+        if image_url:
+            media_id = self.upload_image(image_url)
+            if media_id:
+                media_ids.append(media_id)
+
         features = dict(DEFAULT_FEATURES)
-        resp = self._post_once(text, features)
+        resp = self._post_once(text, features, media_ids)
 
         # A stale GraphQL query id shows up as a 404 on the endpoint itself.
         # Re-discover it from the logged-in bundle and retry once.
         if resp.status_code == 404 and self._refresh_query_id():
-            resp = self._post_once(text, features)
+            resp = self._post_once(text, features, media_ids)
 
         # X reports unknown/missing feature flags by name — add them and retry.
         if resp.status_code == 400 and "features cannot be null" in resp.text:
@@ -254,7 +321,7 @@ class TwitterPoster:
             if added:
                 log_warn(f"adding {len(added)} feature flag(s) X asked for; retrying")
                 features.update(added)
-                resp = self._post_once(text, features)
+                resp = self._post_once(text, features, media_ids)
 
         if resp.status_code == 403 and "could not authenticate" in resp.text.lower():
             raise TwitterPostError(
