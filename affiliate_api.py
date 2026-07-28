@@ -142,7 +142,10 @@ class AffiliateLinkBuilder:
         ctx = self._browser.new_context(
             locale="es-AR", user_agent=UA, storage_state=str(state)
         )
+        from lib import mlgate
+
         self._page = ctx.new_page()
+        mlgate.wait(mlgate.AFFILIATE, label="linkbuilder page")
         self._page.goto(
             self.site + LINKBUILDER_URL, wait_until="domcontentloaded", timeout=60_000
         )
@@ -197,6 +200,9 @@ class AffiliateLinkBuilder:
             return {}
         assert self._page is not None, "use as a context manager"
 
+        from lib import mlgate
+
+        mlgate.wait(mlgate.AFFILIATE, label=f"createLink x{len(urls)}")
         res = self._page.evaluate(
             _CREATE_JS, {"path": CREATE_LINK_PATH, "urls": urls, "tag": self.tag}
         )
@@ -269,12 +275,15 @@ def create_links_http(
     except Exception:  # noqa: BLE001 - unreadable session, let the browser try
         return None
 
+    from lib import mlgate
+
     site = site.rstrip("/")
     try:
         with httpx.Client(
             timeout=30, headers={"User-Agent": UA, "Accept-Language": "es-AR,es;q=0.9"},
             cookies=cookies, follow_redirects=True,
         ) as client:
+            mlgate.wait(mlgate.AFFILIATE, label="linkbuilder page")
             page = client.get(site + LINKBUILDER_URL)
             # A logged-out session is bounced to the login host; the CSRF token
             # we'd scrape from that page is worthless.
@@ -286,6 +295,7 @@ def create_links_http(
             if not m:
                 return None
 
+            mlgate.wait(mlgate.AFFILIATE, label=f"createLink x{len(urls)}")
             resp = client.post(
                 site + CREATE_LINK_PATH,
                 headers={

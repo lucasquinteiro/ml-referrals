@@ -115,5 +115,21 @@
     "model": "llama-3.1-8b-instant",
     "base_url": "https://api.groq.com/openai/v1",
     "api_key_env": "GROQ_API_KEY"
+  },
+  "ml_gate": {
+    "min_interval_sec": 45.0,
+    "jitter": 0.5,
+    "max_per_hour": {
+      "anon": 120,
+      "scraping": 40,
+      "affiliate": 8
+    },
+    "max_per_day": {
+      "anon": 800,
+      "scraping": 200,
+      "affiliate": 30
+    },
+    "cooldown_sec": 3600,
+    "max_single_wait_sec": 900
   }
 }

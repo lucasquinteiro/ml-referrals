@@ -138,12 +138,18 @@ def capture_offer_card(
             )
             page = ctx.new_page()
 
+            from lib import mlgate
+
+            gate_account = mlgate.SCRAPING if source == "search" else mlgate.ANON
+
             for page_no in order:
                 url = (_search_url(site, term, page_no) if source == "search"
                        else _offers_url(site, page_no))
                 try:
+                    mlgate.wait(gate_account, label=f"card {source} p{page_no}")
                     page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                     if any(m in page.url for m in _WALL_MARKERS):
+                        mlgate.trip(gate_account, f"{source} wall")
                         log_warn("screenshot: hit the login wall — the scraping "
                                  "session has expired; re-run `./run login --role scraping`")
                         return None

@@ -225,12 +225,15 @@ def scrape_offers_http(
     import httpx
     from bs4 import BeautifulSoup
 
+    from lib import mlgate
+
     site = site.rstrip("/")
     seen: dict[str, Product] = {}
 
     with httpx.Client(timeout=30, headers=_HTTP_HEADERS, follow_redirects=True) as client:
         for n in range(start_page, start_page + pages):
             url = f"{site}/ofertas" if n == 1 else f"{site}/ofertas?page={n}"
+            mlgate.wait(mlgate.ANON, label=f"ofertas p{n}")
             try:
                 resp = client.get(url)
             except Exception as e:  # noqa: BLE001 - one bad page shouldn't kill the run
@@ -238,6 +241,7 @@ def scrape_offers_http(
                 continue
 
             if any(marker in str(resp.url) for marker in _WALL_MARKERS):
+                mlgate.trip(mlgate.ANON, "ofertas wall")
                 raise BlockedError(
                     f"MercadoLibre served a wall instead of {url} (landed on "
                     f"{resp.url}). /ofertas may now require a login too."
@@ -392,13 +396,17 @@ class MercadoLibreScraper:
         assert self._ctx is not None, "use the scraper as a context manager"
         pg = self._ctx.new_page()
         try:
+            from lib import mlgate
+
             url = self._offers_url(page_no)
+            mlgate.wait(mlgate.ANON, label=f"ofertas p{page_no}")
             pg.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
             try:
                 pg.wait_for_selector("a.poly-component__title", timeout=25_000)
             except Exception:  # noqa: BLE001 - inspect where we actually landed
                 landed = pg.url
                 if any(m in landed for m in _WALL_MARKERS):
+                    mlgate.trip(mlgate.ANON, "ofertas wall")
                     raise BlockedError(
                         f"MercadoLibre served a wall instead of {url} (landed on "
                         f"{landed}). If this persists the /ofertas page may now "
@@ -428,7 +436,10 @@ class MercadoLibreScraper:
         assert self._ctx is not None, "use the scraper as a context manager"
         pg = self._ctx.new_page()
         try:
+            from lib import mlgate
+
             url = self._search_url(term, page_no)
+            mlgate.wait(mlgate.SCRAPING, label=f"search '{term}' p{page_no}")
             pg.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
             try:
                 pg.wait_for_selector(
@@ -436,6 +447,7 @@ class MercadoLibreScraper:
                 )
             except Exception:  # noqa: BLE001
                 if any(m in pg.url for m in _WALL_MARKERS):
+                    mlgate.trip(mlgate.SCRAPING, "search wall")
                     raise BlockedError(
                         f"Search is behind the login wall (landed on {pg.url[:90]}). "
                         "Run `./run login` to attach a session, or use the default "

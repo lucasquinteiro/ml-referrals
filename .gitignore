@@ -18,3 +18,6 @@ __pycache__/
 # Saved Mercado Libre session (./run login) — never commit
 ml-storage.json
 ml-cookies.json
+
+# Rate gate state (per-account throttle timestamps) — machine-local
+mlgate/

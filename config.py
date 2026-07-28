@@ -164,6 +164,21 @@ _DEFAULTS: dict[str, Any] = {
     # own rules for paid/affiliate links. Empty string disables it.
     "tweet_disclosure": "Link de afiliado",
 
+    # ---- Mercado Libre rate gate ------------------------------------------
+    # Every ML request routes through lib/mlgate. Nothing here can burst: a
+    # jittered floor between requests, a rolling per-account budget, and a
+    # circuit breaker that stops an account cold the moment it sees a wall.
+    # Budgets are per identity — "anon" is anonymous /ofertas (IP throttle
+    # only), "scraping" is the burner on search, "affiliate" is link minting.
+    "ml_gate": {
+        "min_interval_sec": 45.0,
+        "jitter": 0.5,
+        "max_per_hour": {"anon": 120, "scraping": 40, "affiliate": 8},
+        "max_per_day": {"anon": 800, "scraping": 200, "affiliate": 30},
+        "cooldown_sec": 3600,
+        "max_single_wait_sec": 900,
+    },
+
     # ---- storage ----------------------------------------------------------
     # "sqlite"   -> state/ml_referrals.db (local, gitignored)
     # "supabase" -> shared Postgres; required in GitHub Actions, since a runner

@@ -1025,12 +1025,20 @@ def cmd_report(args: argparse.Namespace, settings: Any) -> int:
     from lib.log import log_ok, log_stage, log_step
 
     import auth
+    from lib import mlgate
 
     store = _get_store(settings)
     try:
         log_stage("Mercado Libre sessions")
         for role in auth.ROLES:
             log_step(f"{role:10} {auth.describe_session(role)}")
+
+        log_stage("Rate gate (requests used / budget)")
+        for acct in (mlgate.ANON, mlgate.SCRAPING, mlgate.AFFILIATE):
+            st = mlgate.status(acct)
+            cd = st["cooldown_remaining_sec"]
+            note = f"  COOLDOWN {cd // 60}m" if cd else ""
+            log_step(f"{acct:10} {st['in_last_hour']}/h {st['in_last_day']}/day{note}")
 
         stats = store.stats()
         log_stage("Store")
