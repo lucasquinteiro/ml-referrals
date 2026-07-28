@@ -415,9 +415,9 @@ Two scheduled workflows, no server needed:
 
 ```
 SUPABASE_URL  SUPABASE_SERVICE_ROLE_KEY
-ML_AFFILIATE_TAG  ML_AFFILIATE_TOOL_ID  ML_AFFILIATE_STORAGE_STATE
+ML_AFFILIATE_TAG  ML_AFFILIATE_TOOL_ID
 TWITTER_AUTH_TOKEN  TWITTER_CT0
-SLACK_WEBHOOK_URL  GROQ_API_KEY            (both optional)
+ML_AFFILIATE_STORAGE_STATE  SLACK_WEBHOOK_URL  GROQ_API_KEY   (all optional)
 ```
 
 Run each workflow once by hand with `dry_run: true` before letting the

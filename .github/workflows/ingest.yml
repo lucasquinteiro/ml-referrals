@@ -45,8 +45,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          # Optional: only needed for --source search. /ofertas needs no login.
-          ML_STORAGE_STATE: ${{ secrets.ML_STORAGE_STATE }}
+          # No Mercado Libre session here on purpose: this scrapes /ofertas,
+          # which is public. Search would need one, but a logged-in session on
+          # a datacenter IP is exactly what gets an account flagged.
         run: |
           set -euo pipefail
           ARGS=""

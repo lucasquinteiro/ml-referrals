@@ -56,13 +56,27 @@ SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... ./run simulate
 | --- | --- |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase `service_role` key |
-| `ML_AFFILIATE_TAG` | your affiliate tag (e.g. `sharkdeals`) |
-| `ML_AFFILIATE_TOOL_ID` | the `matt_tool` number |
+| `ML_AFFILIATE_TAG` | your affiliate tag (e.g. `sharkdeals`) — **required**, see below |
+| `ML_AFFILIATE_TOOL_ID` | the `matt_tool` number — only used by the fallback |
 | `TWITTER_AUTH_TOKEN` | `auth_token` cookie from a logged-in x.com session |
 | `TWITTER_CT0` | `ct0` cookie from that same session |
 
-`ML_AFFILIATE_TAG` / `ML_AFFILIATE_TOOL_ID` are the two values `./run
-set-affiliate` wrote to your local `.env` — copy them from there.
+Both are the values `./run set-affiliate` wrote to your local `.env`.
+
+**Why the tag is required:** it's a required field of the link builder request
+(`{"urls": [...], "tag": "sharkdeals"}`) — Mercado Libre needs to know which
+affiliate to credit, and nothing in the session says that, since one account can
+hold several tags (`./run affiliate-tags`). No tag means no link generated, and
+the fallback form needs it too. No tag anywhere = untagged links = no commission.
+
+**Why the tool id is still worth setting:** the link builder embeds it in the
+signed link, so it's unused while that works. It only feeds the
+`?matt_word=…&matt_tool=…` fallback — which is exactly what you get when the
+session expires, so it's the thing keeping links tracked until you notice.
+
+Neither is a secret in any real sense: both appear in every link you publish.
+They're listed as secrets for tidiness, but `affiliate.tag` / `affiliate.tool_id`
+in `config.json` work identically if you'd rather commit them.
 
 ### Optional but recommended
 
@@ -71,20 +85,23 @@ set-affiliate` wrote to your local `.env` — copy them from there.
 | `SLACK_WEBHOOK_URL` | no ingest summary posted |
 | `ML_AFFILIATE_STORAGE_STATE` | links fall back to `?matt_word=…` instead of `meli.la/…` |
 | `GROQ_API_KEY` | template copy instead of LLM copy |
-| `ML_STORAGE_STATE` | only needed for `--source search` |
 
-### The session secrets
+There is **no scraping-session secret**. The ingest workflow reads `/ofertas`,
+which is public — the scraping session only exists for `--source search`, which
+you should run locally rather than from a datacenter IP.
+
+### The affiliate session secret
 
 `ML_AFFILIATE_STORAGE_STATE` is the **entire contents** of your local session
 file — Actions has no browser to log in with, so the session has to be carried
-in:
+in. Easiest from the terminal, which never puts the value on a clipboard or a
+web form:
 
 ```bash
-cat state/ml-session-affiliate.json | pbcopy
+gh secret set ML_AFFILIATE_STORAGE_STATE < state/ml-session-affiliate.json
 ```
 
-Paste that as the secret value. `ML_STORAGE_STATE` works the same way for
-`state/ml-session-scraping.json`.
+Or paste the file contents into the web UI as the secret value.
 
 > **These expire.** When they do, link generation silently falls back to the
 > `matt_word` form (still tracked, just not a short link) and search scraping
