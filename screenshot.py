@@ -37,6 +37,8 @@ TITLE_SELECTOR = "a.poly-component__title"
 # screenshot when they happen to sit over the card. Hidden rather than
 # dismissed: clicking "Aceptar cookies" would record a consent decision on the
 # account holder's behalf, which isn't ours to give.
+_WALL_MARKERS = ("account-verification", "/gz/", "bot_challenge")
+
 _HIDE_OVERLAYS_CSS = """
 .cookie-consent-banner-opt-out,
 [class*="cookie-consent"],
@@ -57,6 +59,14 @@ def _offers_url(site: str, page: int) -> str:
     return base if page <= 1 else f"{base}?page={page}"
 
 
+def _search_url(site: str, term: str, page: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", term.lower().strip()).strip("-")
+    host = site.rstrip("/").replace("://www.", "://listado.")
+    if page <= 1:
+        return f"{host}/{slug}"
+    return f"{host}/{slug}_Desde_{(page - 1) * 50 + 1}_NoIndex_True"
+
+
 def capture_offer_card(
     product: Any,
     out_path: Path | str,
@@ -65,11 +75,22 @@ def capture_offer_card(
     max_pages: int = 12,
     page_hint: Optional[int] = None,
     timeout_ms: int = 45_000,
+    source: str = "ofertas",
+    search_term: str = "",
 ) -> Optional[Path]:
-    """Find `product` on /ofertas and screenshot its card. None if not found.
+    """Screenshot `product`'s card. Returns None when it can't be found.
 
-    Not finding it is normal and not an error: /ofertas rotates, and an offer
-    that has dropped off is one whose price we'd be quoting stale anyway.
+    Two sources, same card markup:
+
+      "ofertas"  the public offers page — anonymous, no session, safe to run
+                 often. Only covers what Mercado Libre flags as discounted.
+      "search"   the keyword listings, which is where products ML doesn't
+                 surface as "offers" live. Behind the login wall, so this needs
+                 the scraping session and should be done in the same sitting as
+                 a search ingest rather than as a separate visit.
+
+    Not finding a product is normal, not an error: /ofertas rotates, and search
+    results reshuffle.
     """
     from playwright.sync_api import sync_playwright
 
@@ -86,6 +107,22 @@ def capture_offer_card(
         order.remove(page_hint)
         order.insert(0, page_hint)
 
+    term = search_term or product.matched_keyword
+    if source == "search" and not term:
+        log_warn("screenshot: search source needs a keyword; skipping")
+        return None
+
+    # Search listings are behind the login wall; /ofertas is not, and stays
+    # anonymous so nothing is rate-limited against an account.
+    state = None
+    if source == "search":
+        import auth
+
+        state = auth.storage_state_path(auth.SCRAPING)
+        if not state:
+            log_warn("screenshot: search source needs `./run login --role scraping`")
+            return None
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -97,13 +134,19 @@ def capture_offer_card(
                 viewport={"width": 1440, "height": 1000},
                 device_scale_factor=SCALE,
                 user_agent=UA,  # without a real UA, ML serves not-found
+                storage_state=str(state) if state else None,
             )
             page = ctx.new_page()
 
             for page_no in order:
+                url = (_search_url(site, term, page_no) if source == "search"
+                       else _offers_url(site, page_no))
                 try:
-                    page.goto(_offers_url(site, page_no),
-                              wait_until="domcontentloaded", timeout=timeout_ms)
+                    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    if any(m in page.url for m in _WALL_MARKERS):
+                        log_warn("screenshot: hit the login wall — the scraping "
+                                 "session has expired; re-run `./run login --role scraping`")
+                        return None
                     page.wait_for_selector(CARD_SELECTOR, timeout=25_000)
                     page.add_style_tag(content=_HIDE_OVERLAYS_CSS)
                 except Exception as e:  # noqa: BLE001 - try the next page
@@ -135,8 +178,9 @@ def capture_offer_card(
                 log_step(f"captured offer card from /ofertas page {page_no}")
                 return out_path
 
+            where = f"search '{term}'" if source == "search" else "/ofertas"
             log_warn(f"screenshot: {pid} not found in {max_pages} page(s) of "
-                     "/ofertas — it has probably rotated off")
+                     f"{where}")
             return None
         finally:
             browser.close()

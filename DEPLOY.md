@@ -20,13 +20,25 @@ scheduled**: manual dispatch only, anonymous, and it never mints links.
 
 ## The local loop
 
-Run these when you feel like it — nothing breaks if you skip a day, and pacing
-is the point:
+**Sessions are the scarce resource.** Both of ours died within a day, and a
+large search crawl looks like part of what kills them. So don't log in per
+operation — log in once and take everything in that window:
 
 ```bash
-./run ingest --pages 4                 # scrape + snapshot + mint links
+./run login --role scraping    # burner, only when the last session died
+./run harvest                  # search-scrape + mint links + capture cards
+```
+
+`harvest` does the three logged-in jobs in one sitting. Afterwards the posting
+workflow runs off the database for days without touching Mercado Libre, so a
+dead session costs you nothing until the next harvest.
+
+For the anonymous path, which needs no session at all and can run whenever:
+
+```bash
+./run ingest --pages 4                 # /ofertas, anonymous
 ./run ingest --pages 4 --start-page 5  # later: the next chunk, not one burst
-./run images --limit 10                # render offer cards, upload for posting
+./run images --limit 10                # cards from /ofertas, anonymous
 ./run simulate                         # see what the next tweet will be
 ```
 
@@ -34,11 +46,16 @@ Page fetches are spaced by `delay_between_pages_sec` (4s) randomised +/-50%, so
 the interval isn't itself a signature. `--start-page` splits a big crawl across
 several runs spread over the day.
 
-`./run images` is what makes tweets show Mercado Libre's real offer card. It
-needs a browser, so it stays local; the rendered PNG is uploaded to Supabase
-Storage and the posting job just downloads it. **It only works for products
-that came from `/ofertas`** — search-sourced products aren't on that page, and
-their product pages are login-walled.
+`./run images` renders Mercado Libre's real offer card. It needs a browser, so
+it stays local; the PNG goes to Supabase Storage and the posting job just
+downloads it. `--source ofertas` (default) is anonymous; `--source search`
+covers products ML doesn't flag as offers and needs the scraping session —
+which is why `harvest` does it inside the same login window.
+
+There is no anonymous route to search listings. Verified: the official API
+returns `403 forbidden`, and `listado.`, `m.` and product pages all redirect to
+the login wall. If you want the catalogue beyond ML's own offers page, a
+session is the price.
 
 ---
 

@@ -121,7 +121,20 @@ def _parse_args() -> argparse.Namespace:
                      help="Seconds between captures (default 6)")
     img.add_argument("--redo", action="store_true",
                      help="Re-render even if an image is already stored")
+    img.add_argument("--source", choices=["ofertas", "search"], default="ofertas",
+                     help="Where to find the card. search covers products ML "
+                          "doesn't flag as offers, but needs the scraping session")
     _freshness_flags(img)
+
+    har = sub.add_parser(
+        "harvest",
+        help="One logged-in sitting: search-scrape, mint links, capture cards",
+    )
+    har.add_argument("--pages", type=int, default=2,
+                     help="Search pages per keyword (default 2)")
+    har.add_argument("--images", type=int, default=10,
+                     help="How many top offers to capture cards for (default 10)")
+    har.add_argument("--no-slack", action="store_true")
 
     db = sub.add_parser("db", help="Run a read-only SQL query against the store")
     db.add_argument("sql", nargs="?", default=None,
@@ -745,8 +758,10 @@ def cmd_images(args: argparse.Namespace, settings: Any) -> int:
         made = 0
         for i, product in enumerate(todo, 1):
             log_step(f"[{i}/{len(todo)}] {product.discount_pct}% — {product.title[:46]}")
-            raw = shot_mod.capture_offer_card(product, shots_dir / f"{product.product_id}.png",
-                                              site=settings.site)
+            raw = shot_mod.capture_offer_card(
+                product, shots_dir / f"{product.product_id}.png",
+                site=settings.site, source=getattr(args, "source", "ofertas"),
+            )
             if not raw:
                 continue
             composed = card_mod.compose_screenshot(
@@ -774,6 +789,49 @@ def cmd_images(args: argparse.Namespace, settings: Any) -> int:
         return 0
     finally:
         store.close()
+
+
+def cmd_harvest(args: argparse.Namespace, settings: Any) -> int:
+    """Everything that needs Mercado Libre, in one logged-in sitting.
+
+    Sessions don't survive long — both of ours died within a day, and a big
+    search crawl seems to be part of what kills them. So rather than logging in
+    for each operation, do one login and take everything in that window:
+    products, affiliate links and card images. The posting job then runs off
+    the database for days without touching Mercado Libre at all.
+    """
+    import argparse as _argparse
+
+    import auth
+    from lib.log import log_err, log_ok, log_stage, log_step
+
+    if not auth.has_session(auth.SCRAPING):
+        log_err("Harvest needs the scraping session. Run "
+                "`./run login --role scraping` (burner account) first.")
+        return 1
+
+    log_stage("Harvest — one session, three jobs")
+    log_step(f"scraping: {auth.describe_session(auth.SCRAPING)}")
+    log_step(f"affiliate: {auth.describe_session(auth.AFFILIATE)}")
+
+    ingest_args = _argparse.Namespace(
+        pages=args.pages, dry_run=False, headed=False, keyword=None, all=False,
+        source="search", no_slack=args.no_slack, no_links=False, start_page=1,
+    )
+    rc = cmd_ingest(ingest_args, settings)
+    if rc != 0:
+        return rc
+
+    if args.images:
+        log_stage("Capturing offer cards from the search listings")
+        image_args = _argparse.Namespace(
+            limit=args.images, delay=6.0, redo=False, source="search",
+            max_age_hours=None, stale_ok=True, llm=False,
+        )
+        cmd_images(image_args, settings)
+
+    log_ok("harvest complete — posting can now run for days without Mercado Libre")
+    return 0
 
 
 def cmd_db(args: argparse.Namespace, settings: Any) -> int:
@@ -1090,6 +1148,7 @@ def main() -> int:
         "simulate": cmd_simulate,
         "offers": cmd_offers,
         "images": cmd_images,
+        "harvest": cmd_harvest,
         "db": cmd_db,
         "post": cmd_post,
         "report": cmd_report,
