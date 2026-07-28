@@ -77,16 +77,41 @@ DEFAULT_FEATURES: dict[str, bool] = {
 }
 
 
-def _upsized(url: str) -> str:
-    """MercadoLibre encodes the render size in the filename; the 2X variant is
-    roughly 3x the pixels for the same image. Returns the original unchanged
-    when it's already 2X or doesn't look like an ML image URL."""
-    if not url or "_2X_" in url:
-        return url
-    for marker in ("D_NQ_NP_", "D_Q_NP_"):
-        if marker in url:
-            return url.replace(marker, marker + "2X_", 1)
-    return url
+def _image_candidates(url: str) -> list[str]:
+    """Bigger renders of a MercadoLibre image URL, best first.
+
+    ML encodes the render size in the filename: a `_2X_` infix and a size
+    suffix. Measured on a real listing:
+
+        -F  1199x1200   (44 KB)   <- what we want in a tweet
+        -O   999x1000   (34 KB)
+        -E   560x560    (14 KB)   <- what the offer card links to
+        -V   thumbnail
+
+    Not every listing publishes every variant, so this returns an ordered list
+    to try rather than one guess, always ending with the original URL.
+    """
+    if not url:
+        return []
+
+    cands: list[str] = []
+    # Suffixes run 1-2 letters (-E, -O, -F, -V, -AB, ...) and must be *replaced*,
+    # not appended: appending leaves ML serving the original render.
+    m = re.match(r"(?P<pre>.*?)(?P<marker>D_(?:NQ_)?Q?_?NP_(?:2X_)?)(?P<body>.+?)"
+                 r"(?P<suffix>-[A-Z]{1,2})?\.(?P<ext>webp|jpg|jpeg|png)$", url, re.I)
+    if m:
+        pre, body, ext = m.group("pre"), m.group("body"), m.group("ext")
+        marker = m.group("marker")
+        if "2X_" not in marker:
+            marker = marker + "2X_"
+        for suffix in ("-F", "-O"):
+            cand = f"{pre}{marker}{body}{suffix}.{ext}"
+            if cand != url:
+                cands.append(cand)
+
+    cands.append(url)
+    # De-duplicate, preserving order.
+    return list(dict.fromkeys(cands))
 
 
 class TwitterPostError(RuntimeError):
@@ -239,16 +264,22 @@ class TwitterPoster:
         """
         if self.dry_run:
             return None
+        content = b""
+        mime = "image/jpeg"
         try:
             with httpx.Client(timeout=timeout, headers={"User-Agent": UA}) as c:
-                img = c.get(_upsized(url))
-                if img.status_code != 200 or not img.content:
-                    img = c.get(url)  # the upsized variant may not exist
-                if img.status_code != 200 or not img.content:
-                    log_warn(f"could not fetch product image ({img.status_code})")
-                    return None
-                content = img.content
-                mime = img.headers.get("content-type", "image/jpeg").split(";")[0]
+                for candidate in _image_candidates(url):
+                    try:
+                        img = c.get(candidate)
+                    except Exception:  # noqa: BLE001 - try the next variant
+                        continue
+                    if img.status_code == 200 and img.content:
+                        content = img.content
+                        mime = img.headers.get("content-type", mime).split(";")[0]
+                        break
+            if not content:
+                log_warn(f"could not fetch product image: {url}")
+                return None
 
             with httpx.Client(timeout=timeout) as c:
                 r = c.post(

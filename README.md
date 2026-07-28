@@ -393,10 +393,11 @@ of its real length.
 natively, so the tweet renders a full-width picture. Relying on the link's own
 preview instead only gets you Mercado Libre's `summary` card — a small square
 thumbnail — because that's the card type their pages declare, and we can't
-change their meta tags. The upload uses the `2X` variant of the scraped
-thumbnail (~3x the pixels), falling back to the original if that variant 404s,
-and to text-only if the upload fails outright: a tweet with no picture beats no
-tweet.
+change their meta tags. The offer card only links a small render (560x560 or less), so the uploader
+walks MercadoLibre's size variants best-first — `-F` (~1200x1200), then `-O`,
+then whatever the card gave us — measured at ~2.9x more image data across a
+sample of stored products. If the upload fails it posts text-only: a tweet with
+no picture beats no tweet.
 
 `tweet_disclosure` appends an affiliate disclosure to every tweet. Keep it —
 disclosing affiliate links is required by X's rules and by consumer-protection
