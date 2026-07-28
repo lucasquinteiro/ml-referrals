@@ -94,8 +94,10 @@
       "forceInApp": "true"
     },
     "min_discount_for_link": 40,
-    "max_links_per_ingest": 40,
-    "allow_browser_fallback": true
+    "max_links_per_ingest": 10,
+    "allow_browser_fallback": true,
+    "link_batch_size": 5,
+    "delay_between_link_batches_sec": 25
   },
   "use_llm_for_copy": true,
   "tweet_language": "es-AR",

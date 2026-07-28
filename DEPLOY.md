@@ -26,10 +26,27 @@ operation — log in once and take everything in that window:
 
 ```bash
 ./run login --role scraping    # burner, only when the last session died
-./run harvest                  # search-scrape + mint links + capture cards
+./run harvest                  # search-scrape + capture offer cards
+./run links                    # separately: mint affiliate links, paced
 ```
 
-`harvest` does the three logged-in jobs in one sitting. Afterwards the posting
+`harvest` scrapes and captures cards. It deliberately does **not** mint
+affiliate links.
+
+Scraping is anonymous and cheap to repeat. Minting is authenticated activity on
+the account your commissions belong to, and a long unbroken run of link
+creations is the pattern most likely to get that account looked at — so it
+never rides along with a scrape. `./run links` mints in batches of 5 with a
+~25s pause between them, capped at 10 per run
+(`affiliate.link_batch_size`, `delay_between_link_batches_sec`,
+`max_links_per_ingest`). Check what it would do first:
+
+```bash
+./run links --dry-run
+```
+
+Links are cached per (product, tag), so a product only ever costs one
+creation. Afterwards the posting
 workflow runs off the database for days without touching Mercado Libre, so a
 dead session costs you nothing until the next harvest.
 

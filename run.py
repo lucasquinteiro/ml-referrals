@@ -69,8 +69,6 @@ def _parse_args() -> argparse.Namespace:
                      help="ofertas (default, no login) or search (needs ./run login)")
     ing.add_argument("--no-slack", action="store_true",
                      help="Skip the Slack summary even if SLACK_WEBHOOK_URL is set")
-    ing.add_argument("--no-links", action="store_true",
-                     help="Skip pre-minting affiliate links for this run")
     ing.add_argument("--start-page", type=int, default=1, metavar="N",
                      help="First /ofertas page to crawl. Split a big crawl "
                           "across several runs instead of one burst.")
@@ -135,6 +133,17 @@ def _parse_args() -> argparse.Namespace:
     har.add_argument("--images", type=int, default=10,
                      help="How many top offers to capture cards for (default 10)")
     har.add_argument("--no-slack", action="store_true")
+
+    lnk = sub.add_parser(
+        "links",
+        help="Mint affiliate links for the top offers, in small paced batches",
+    )
+    lnk.add_argument("--limit", type=int, default=None,
+                     help="How many links to mint (default: "
+                          "affiliate.max_links_per_ingest)")
+    lnk.add_argument("--dry-run", action="store_true",
+                     help="List what would be minted without creating anything")
+    _freshness_flags(lnk)
 
     db = sub.add_parser("db", help="Run a read-only SQL query against the store")
     db.add_argument("sql", nargs="?", default=None,
@@ -258,61 +267,84 @@ def _scrape_and_match(
 # --------------------------------------------------------------------------
 
 
-def _prefetch_links(store: Any, settings: Any, deals: list[Any]) -> int:
-    """Mint affiliate links for this run's best offers, in one batch.
+def _mint_links(store: Any, settings: Any, deals: list[Any], *,
+                limit: Optional[int] = None, dry_run: bool = False) -> int:
+    """Mint affiliate links in small, spaced batches.
 
-    Doing it here rather than at post time means the browser (if the HTTP path
-    is rejected) starts once a day instead of once a tweet, and posting becomes
-    pure HTTP. The endpoint accepts a list, so the whole run is one call.
+    Kept separate from scraping on purpose. Scraping is anonymous and cheap to
+    repeat; minting is authenticated activity on the account the commissions
+    belong to, and a long unbroken run of creations is the pattern most likely
+    to get that account looked at. Small batches, a pause between them, and a
+    hard ceiling per run.
     """
+    import random
+    import time as _time
+
     from affiliate_api import AffiliateAPIError, NotAnAffiliateError, create_links
     from lib.log import log_err, log_ok, log_step, log_warn
 
     aff = settings.affiliate or {}
     tag = settings.affiliate_tag
-    if not tag or not aff.get("use_link_builder", True):
+    if not tag:
+        log_err("No affiliate tag configured. Run `./run set-affiliate <link>`.")
+        return 0
+    if not aff.get("use_link_builder", True):
+        log_step("affiliate.use_link_builder is off; nothing to mint")
         return 0
 
     floor = aff.get("min_discount_for_link", 40)
-    cap = aff.get("max_links_per_ingest", 40)
-    wanted = [p for p in deals if (p.discount_pct or 0) >= floor][:cap]
-    if not wanted:
-        log_step(f"no offers at {floor}%+ to mint links for")
-        return 0
+    cap = limit if limit is not None else aff.get("max_links_per_ingest", 10)
+    batch_size = max(1, aff.get("link_batch_size", 5))
+    pause = aff.get("delay_between_link_batches_sec", 25)
 
+    wanted = [p for p in deals if (p.discount_pct or 0) >= floor]
     cached = store.get_affiliate_links([p.product_id for p in wanted], tag)
-    missing = [p for p in wanted if p.product_id not in cached]
+    missing = [p for p in wanted if p.product_id not in cached][:cap]
+
+    log_step(f"{len(wanted)} offer(s) at {floor}%+ · {len(cached)} already have "
+             f"links · minting {len(missing)} (cap {cap})")
     if not missing:
-        log_step(f"{len(wanted)} link(s) already cached")
         return 0
 
-    log_step(f"minting {len(missing)} affiliate link(s) at {floor}%+ off")
-    try:
-        generated = create_links(
-            [p.url for p in missing], site=settings.site, tag=tag,
-            allow_browser=aff.get("allow_browser_fallback", True),
-        )
-    except NotAnAffiliateError as e:
-        log_err(str(e))
-        return 0
-    except AffiliateAPIError as e:
-        log_warn(f"link minting unavailable ({e}); posting will fall back to "
-                 "matt_word/matt_tool links")
+    if dry_run:
+        for p in missing:
+            log_step(f"  would mint: {p.discount_pct}% — {p.title[:56]}")
         return 0
 
-    by_url = {p.url: p for p in missing}
     saved = 0
-    for url, pair in generated.items():
-        product = by_url.get(url)
-        if not product:
-            continue
-        store.save_affiliate_link(
-            product_id=product.product_id, product_url=product.url,
-            short_url=pair["short"], full_url=pair["full"], tag=tag,
-        )
-        saved += 1
+    batches = [missing[i:i + batch_size] for i in range(0, len(missing), batch_size)]
+    for n, batch in enumerate(batches, 1):
+        log_step(f"batch {n}/{len(batches)} ({len(batch)} link(s))")
+        try:
+            generated = create_links(
+                [p.url for p in batch], site=settings.site, tag=tag,
+                allow_browser=aff.get("allow_browser_fallback", True),
+            )
+        except NotAnAffiliateError as e:
+            log_err(str(e))
+            return saved
+        except AffiliateAPIError as e:
+            log_warn(f"link minting stopped ({e})")
+            return saved
+
+        by_url = {p.url: p for p in batch}
+        for url, pair in generated.items():
+            product = by_url.get(url)
+            if not product:
+                continue
+            store.save_affiliate_link(
+                product_id=product.product_id, product_url=product.url,
+                short_url=pair["short"], full_url=pair["full"], tag=tag,
+            )
+            saved += 1
+
+        if n < len(batches):
+            wait = random.uniform(pause * 0.7, pause * 1.3)
+            log_step(f"pausing {wait:.0f}s before the next batch")
+            _time.sleep(wait)
+
     if saved:
-        log_ok(f"cached {saved} affiliate link(s) — posting won't need to mint any")
+        log_ok(f"minted {saved} link(s)")
     return saved
 
 
@@ -344,10 +376,6 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
         n = store.record_snapshots(to_store, run_id)
         store.finish_run(run_id, products_seen=len(products), offers_matched=len(matched))
         log_ok(f"recorded {n} snapshots (run #{run_id})")
-
-        if not args.no_links:
-            log_stage("Pre-minting affiliate links")
-            _prefetch_links(store, settings, off.filter_offers(matched, settings))
 
         # Queue depth reflects everything stored, not just this run's haul.
         queue_total = len(_select_deals(store, settings))
@@ -816,7 +844,7 @@ def cmd_harvest(args: argparse.Namespace, settings: Any) -> int:
 
     ingest_args = _argparse.Namespace(
         pages=args.pages, dry_run=False, headed=False, keyword=None, all=False,
-        source="search", no_slack=args.no_slack, no_links=False, start_page=1,
+        source="search", no_slack=args.no_slack, start_page=1,
     )
     rc = cmd_ingest(ingest_args, settings)
     if rc != 0:
@@ -830,8 +858,32 @@ def cmd_harvest(args: argparse.Namespace, settings: Any) -> int:
         )
         cmd_images(image_args, settings)
 
-    log_ok("harvest complete — posting can now run for days without Mercado Libre")
+    log_ok("harvest complete")
+    log_step("Affiliate links are NOT minted here — that's account activity, "
+             "and it shouldn't ride along with a scrape.")
+    log_step("Mint them separately, when you're ready:  ./run links")
     return 0
+
+
+def cmd_links(args: argparse.Namespace, settings: Any) -> int:
+    """Mint affiliate links — a deliberate, separate step from scraping."""
+    from lib.log import log_stage, log_step
+
+    store = _get_store(settings)
+    try:
+        log_stage("Checking the scraped data")
+        bail = _require_fresh_data(store, settings, args)
+        if bail is not None:
+            return bail
+
+        deals = _select_deals(store, settings)
+        log_stage(f"{len(deals)} offer(s) in the queue")
+        _mint_links(store, settings, deals, limit=args.limit, dry_run=args.dry_run)
+        if args.dry_run:
+            log_step("dry run — nothing was created in your affiliate account")
+        return 0
+    finally:
+        store.close()
 
 
 def cmd_db(args: argparse.Namespace, settings: Any) -> int:
@@ -1149,6 +1201,7 @@ def main() -> int:
         "offers": cmd_offers,
         "images": cmd_images,
         "harvest": cmd_harvest,
+        "links": cmd_links,
         "db": cmd_db,
         "post": cmd_post,
         "report": cmd_report,

@@ -125,13 +125,17 @@ _DEFAULTS: dict[str, Any] = {
         # signed ref=) when a session is available. Falls back to the param
         # form below whenever it isn't.
         "use_link_builder": True,
-        # Mint links during ingest, for offers at or above this discount. The
-        # endpoint takes a batch, so one call covers the whole run — and then
-        # posting needs no link generation at all.
+        # Only mint links for offers at or above this discount.
         "min_discount_for_link": 40,
-        # Ceiling on one ingest's batch, so a very good scraping day can't mint
-        # hundreds of links in your affiliate dashboard.
-        "max_links_per_ingest": 40,
+        # Hard ceiling per `./run links` run. Minting is deliberately a
+        # separate, opt-in command: a burst of link creations is account-level
+        # activity on the one account whose standing the whole business rests
+        # on, so it should never ride along with a scrape.
+        "max_links_per_ingest": 10,
+        # Links are minted in small batches with a pause between them, rather
+        # than one call carrying everything.
+        "link_batch_size": 5,
+        "delay_between_link_batches_sec": 25,
         # createLink is tried over plain HTTP first. This allows falling back
         # to driving a real browser when the session isn't accepted that way.
         "allow_browser_fallback": True,
