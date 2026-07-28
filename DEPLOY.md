@@ -86,9 +86,25 @@ in `config.json` work identically if you'd rather commit them.
 | `ML_AFFILIATE_STORAGE_STATE` | links fall back to `?matt_word=…` instead of `meli.la/…` |
 | `GROQ_API_KEY` | template copy instead of LLM copy |
 
-There is **no scraping-session secret**. The ingest workflow reads `/ofertas`,
-which is public — the scraping session only exists for `--source search`, which
-you should run locally rather than from a datacenter IP.
+**There is no scraping-session secret**, and that isn't the two-account split
+breaking down — it's the split working. Which account runs where:
+
+| Where | What it does | Account |
+| --- | --- | --- |
+| CI `ingest` | scrapes `/ofertas` | **none** — the page is public |
+| CI `post` | mints `meli.la` links | affiliate |
+| Local `ingest --source search` | search pages behind the wall | **burner** |
+| Local `simulate` / `post` | mints links | affiliate |
+
+The burner is still doing its job; it's just only needed for `--source search`,
+which stays local. The risky activity — hammering search pages — never leaves
+your home IP, and the only thing CI ever authenticates as is the affiliate
+account, doing a handful of link-builder calls that look nothing like scraping.
+
+If you *do* want search coverage from CI, add `ML_STORAGE_STATE` (the contents
+of `state/ml-storage.json`) and pass `--source search` in the workflow. Read the
+warning above first: that puts your burner's logged-in session on a datacenter
+IP every day, which is the fastest way to get it flagged.
 
 ### The affiliate session secret
 
