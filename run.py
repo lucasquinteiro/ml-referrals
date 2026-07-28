@@ -81,6 +81,13 @@ def _parse_args() -> argparse.Namespace:
                     help="scraping = burner for search pages (default); "
                          "affiliate = the account that mints your links")
 
+    sc = sub.add_parser(
+        "session-check",
+        help="Reopen each saved session and report whether it's still logged in",
+    )
+    sc.add_argument("--role", choices=["scraping", "affiliate"], default=None,
+                    help="Check one role (default: both)")
+
     def _freshness_flags(p: argparse.ArgumentParser) -> None:
         p.add_argument("--max-age-hours", type=float, default=None,
                        help="Refuse to run if the data is older than this "
@@ -1197,6 +1204,38 @@ def cmd_login(args: argparse.Namespace, settings: Any) -> int:
     return auth.login(settings.site, args.role)
 
 
+def cmd_session_check(args: argparse.Namespace, settings: Any) -> int:
+    """Reopen saved sessions and confirm they're still authenticated.
+
+    The round-trip longevity test: run it on a timer and it tells you the moment
+    a session dies (and, by how long it lasted, whether persistent profiles are
+    holding). Posts to Slack when a session is found dead.
+    """
+    import auth
+    from lib.log import log_err, log_ok, log_stage, log_step
+
+    roles = [args.role] if args.role else list(auth.ROLES)
+    any_dead = False
+    for role in roles:
+        log_stage(f"Checking the {role} session")
+        res = auth.session_check(settings.site, role)
+        line = f"{role}: {res['account']} — {res['detail']}"
+        if res["alive"]:
+            log_ok(line)
+        else:
+            log_err(line)
+            any_dead = True
+            try:
+                import notifier
+                notifier.notify(f":warning: *ml-referrals* — the *{role}* Mercado "
+                                f"Libre session is dead ({res['detail']}). "
+                                f"Re-run `./run login --role {role}` and rsync the "
+                                f"profile to the droplet.")
+            except Exception:  # noqa: BLE001
+                pass
+    return 1 if any_dead else 0
+
+
 def main() -> int:
     args = _parse_args()
     cfg.bootstrap()
@@ -1204,6 +1243,7 @@ def main() -> int:
 
     handlers = {
         "login": cmd_login,
+        "session-check": cmd_session_check,
         "ingest": cmd_ingest,
         "simulate": cmd_simulate,
         "offers": cmd_offers,

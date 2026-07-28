@@ -112,30 +112,20 @@ def capture_offer_card(
         log_warn("screenshot: search source needs a keyword; skipping")
         return None
 
+    import auth
+
     # Search listings are behind the login wall; /ofertas is not, and stays
     # anonymous so nothing is rate-limited against an account.
-    state = None
-    if source == "search":
-        import auth
+    role = auth.SCRAPING if source == "search" else None
+    if source == "search" and not auth.has_session(auth.SCRAPING):
+        log_warn("screenshot: search source needs `./run login --role scraping`")
+        return None
 
-        state = auth.storage_state_path(auth.SCRAPING)
-        if not state:
-            log_warn("screenshot: search source needs `./run login --role scraping`")
-            return None
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
+    with auth.BrowserSession(
+        role, viewport={"width": 1440, "height": 1000},
+        device_scale_factor=SCALE, user_agent=UA,
+    ) as ctx:
         try:
-            ctx = browser.new_context(
-                locale="es-AR",
-                viewport={"width": 1440, "height": 1000},
-                device_scale_factor=SCALE,
-                user_agent=UA,  # without a real UA, ML serves not-found
-                storage_state=str(state) if state else None,
-            )
             page = ctx.new_page()
 
             from lib import mlgate
@@ -188,5 +178,6 @@ def capture_offer_card(
             log_warn(f"screenshot: {pid} not found in {max_pages} page(s) of "
                      f"{where}")
             return None
-        finally:
-            browser.close()
+        except Exception as e:  # noqa: BLE001 - never let a capture crash a post
+            log_warn(f"screenshot failed ({type(e).__name__}: {e})")
+            return None

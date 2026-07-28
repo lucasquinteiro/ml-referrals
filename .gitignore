@@ -21,3 +21,6 @@ ml-cookies.json
 
 # Rate gate state (per-account throttle timestamps) — machine-local
 mlgate/
+
+# Persistent browser profiles (./run login) — machine-local, rsync to droplet
+profiles/

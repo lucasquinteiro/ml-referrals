@@ -339,32 +339,24 @@ class MercadoLibreScraper:
         self.timeout_ms = timeout_ms
         self.use_session = use_session
         self.authenticated = False
-        self._pw = None
-        self._browser = None
+        self._session = None
         self._ctx = None
 
     # ---- context management ---------------------------------------------
 
     def __enter__(self) -> "MercadoLibreScraper":
-        from playwright.sync_api import sync_playwright
-
         import auth
 
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(
-            headless=self.headless,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
-        # Reuse a saved login when there is one — /ofertas doesn't need it, but
-        # search and product pages do. Anonymous is the default.
-        state = auth.storage_state_path(auth.SCRAPING) if self.use_session else None
-        self._ctx = self._browser.new_context(
-            locale="es-AR",
-            user_agent=UA,
+        # Reuse the scraping session when there is one — /ofertas doesn't need
+        # it, but search does. Anonymous is the default. BrowserSession picks a
+        # persistent profile over a frozen snapshot automatically.
+        role = auth.SCRAPING if self.use_session else None
+        self._session = auth.BrowserSession(
+            role, headless=self.headless, user_agent=UA,
             viewport={"width": 1440, "height": 1000},
-            storage_state=str(state) if state else None,
         )
-        self.authenticated = bool(state)
+        self._ctx = self._session.__enter__()
+        self.authenticated = self._session.mode in ("profile", "snapshot")
         # Images/fonts/media are pure bandwidth here — the thumbnail URL is in
         # the DOM regardless of whether the bytes are fetched.
         self._ctx.route(
@@ -374,17 +366,8 @@ class MercadoLibreScraper:
         return self
 
     def __exit__(self, *exc: Any) -> None:
-        for closer in (self._ctx, self._browser):
-            try:
-                if closer:
-                    closer.close()
-            except Exception:  # noqa: BLE001 - teardown is best-effort
-                pass
-        try:
-            if self._pw:
-                self._pw.stop()
-        except Exception:  # noqa: BLE001
-            pass
+        if self._session:
+            self._session.__exit__(*exc)
 
     # ---- scraping --------------------------------------------------------
 

@@ -120,30 +120,21 @@ class AffiliateLinkBuilder:
         self.site = site.rstrip("/")
         self.tag = tag
         self.storage_state = storage_state
-        self._pw = None
-        self._browser = None
+        self._session = None
         self._page = None
 
     def __enter__(self) -> "AffiliateLinkBuilder":
         import auth
-        from playwright.sync_api import sync_playwright
+        from lib import mlgate
 
-        state = self.storage_state or auth.storage_state_path(auth.AFFILIATE)
-        if not state:
+        if not auth.has_session(auth.AFFILIATE):
             raise AffiliateAPIError(
                 "No affiliate session. Run `./run login --role affiliate` and "
                 "sign in with the account enrolled in the Programa de Afiliados."
             )
 
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(
-            headless=True, args=["--disable-blink-features=AutomationControlled"]
-        )
-        ctx = self._browser.new_context(
-            locale="es-AR", user_agent=UA, storage_state=str(state)
-        )
-        from lib import mlgate
-
+        self._session = auth.BrowserSession(auth.AFFILIATE, user_agent=UA)
+        ctx = self._session.__enter__()
         self._page = ctx.new_page()
         mlgate.wait(mlgate.AFFILIATE, label="linkbuilder page")
         self._page.goto(
@@ -153,16 +144,8 @@ class AffiliateLinkBuilder:
         return self
 
     def __exit__(self, *exc: Any) -> None:
-        try:
-            if self._browser:
-                self._browser.close()
-        except Exception:  # noqa: BLE001 - teardown is best-effort
-            pass
-        try:
-            if self._pw:
-                self._pw.stop()
-        except Exception:  # noqa: BLE001
-            pass
+        if self._session:
+            self._session.__exit__(*exc)
 
     def list_tags(self) -> list[dict[str, Any]]:
         """The affiliate tags on this account, newest first.
