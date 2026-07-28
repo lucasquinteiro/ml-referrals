@@ -105,9 +105,18 @@ def match_products(
 
 
 def filter_offers(
-    products: Iterable[Product], settings: Any, *, exclude_ids: Optional[set[str]] = None
+    products: Iterable[Product],
+    settings: Any,
+    *,
+    exclude_ids: Optional[set[str]] = None,
+    min_discount_override: Optional[int] = None,
 ) -> list[Product]:
-    """Keep only products that clear the deal thresholds, best discount first."""
+    """Keep only products that clear the deal thresholds, best discount first.
+
+    `min_discount_override` beats both the global floor and any per-keyword
+    `min_discount_pct` — it's the "just show me the big ones" lever, so a
+    keyword configured at 15% shouldn't sneak past it.
+    """
     exclude_ids = exclude_ids or set()
     min_rating = float(settings.min_rating or 0)
     kept: list[Product] = []
@@ -119,8 +128,11 @@ def filter_offers(
             continue
 
         kw: Optional[Keyword] = p.extra.get("keyword")
-        min_disc = (kw.min_discount_pct if kw and kw.min_discount_pct is not None
-                    else settings.min_discount_pct)
+        if min_discount_override is not None:
+            min_disc = min_discount_override
+        else:
+            min_disc = (kw.min_discount_pct if kw and kw.min_discount_pct is not None
+                        else settings.min_discount_pct)
         min_price = (kw.min_price if kw and kw.min_price is not None
                      else settings.min_price)
         max_price = (kw.max_price if kw and kw.max_price is not None

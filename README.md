@@ -238,6 +238,15 @@ reviewable. Run it again for the next one — the queue is ordered by discount,
 and anything already posted is held back for `repost_cooldown_days`.
 
 To see more of the queue than `simulate` shows, use `./run offers --limit 20`.
+Narrow it to the standouts with `--min-discount`:
+
+```bash
+./run offers --min-discount 60 --limit 20   # only 60%+ off
+```
+
+That overrides both the global `min_discount_pct` and any per-keyword one, so a
+keyword configured at 15% can't slip through. It only filters what's displayed —
+to change what actually gets posted, edit `min_discount_pct` in `config.json`.
 
 These commands read the stored data — they never scrape. If the data is older
 than `max_data_age_hours` (default 12) they stop and tell you to run `./run

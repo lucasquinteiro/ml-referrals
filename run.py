@@ -98,6 +98,9 @@ def _parse_args() -> argparse.Namespace:
         help="Browse the offer queue and the tweet each one would produce",
     )
     ofr.add_argument("--limit", type=int, default=10, help="How many offers to show")
+    ofr.add_argument("--min-discount", type=int, default=None, metavar="PCT",
+                     help="Only show offers at or above this discount, "
+                          "overriding the config floor and any per-keyword one")
     _freshness_flags(ofr)
 
     db = sub.add_parser("db", help="Run a read-only SQL query against the store")
@@ -266,7 +269,9 @@ def _require_fresh_data(store: Any, settings: Any, args: argparse.Namespace) -> 
     return None
 
 
-def _select_deals(store: Any, settings: Any) -> list[Any]:
+def _select_deals(
+    store: Any, settings: Any, *, min_discount: Optional[int] = None
+) -> list[Any]:
     """The postable queue: keyword-matched, threshold-clearing, off cooldown.
 
     Ordered best-discount-first, so the head of this list is always the next
@@ -277,7 +282,9 @@ def _select_deals(store: Any, settings: Any) -> list[Any]:
     stored = store.latest_matched_products()
     matched = off.match_products(stored, off.load_keywords(settings), settings)
     cooldown = store.recently_posted(settings.repost_cooldown_days)
-    return off.filter_offers(matched, settings, exclude_ids=cooldown)
+    return off.filter_offers(
+        matched, settings, exclude_ids=cooldown, min_discount_override=min_discount
+    )
 
 
 def _resolve_links(
@@ -436,11 +443,16 @@ def cmd_offers(args: argparse.Namespace, settings: Any) -> int:
         if bail is not None:
             return bail
 
-        deals = _select_deals(store, settings)
-        log_stage(f"{len(deals)} offer(s) in the queue")
+        deals = _select_deals(store, settings, min_discount=args.min_discount)
+        gate = (f" at {args.min_discount}%+ off" if args.min_discount is not None else "")
+        log_stage(f"{len(deals)} offer(s) in the queue{gate}")
         if not deals:
-            log_warn("Nothing cleared the thresholds. Lower min_discount_pct in "
-                     "config.json, widen the keywords, or run ./run ingest again.")
+            if args.min_discount is not None:
+                log_warn(f"Nothing at {args.min_discount}%+ off. Try a lower "
+                         "--min-discount, or ./run ingest for fresher data.")
+            else:
+                log_warn("Nothing cleared the thresholds. Lower min_discount_pct "
+                         "in config.json, widen the keywords, or re-run ingest.")
             return 0
 
         shown = deals[: args.limit]
