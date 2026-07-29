@@ -22,9 +22,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$HERE"
 
 echo "==> code (git)"
-# Prefer git on the droplet; this just makes sure it's current.
-ssh "$TARGET" "cd $APP_DIR && git pull --ff-only" || {
-  echo "   (git pull failed — is $APP_DIR a clone? see deploy/README.md)"; }
+# safe.directory first: the repo is mlref-owned but we pull as root, and git
+# otherwise refuses ("dubious ownership") and fails silently — shipping stale
+# code. `git pull --ff-only` after it, and surface a non-zero exit loudly.
+ssh "$TARGET" "git config --global --add safe.directory $APP_DIR; cd $APP_DIR && git pull --ff-only" || {
+  echo "   ✗ git pull failed — fix on the droplet before continuing" >&2; exit 1; }
 
 echo "==> .env"
 [[ -f .env ]] && rsync -av .env "$TARGET:$APP_DIR/.env" || echo "   no local .env; skipping"

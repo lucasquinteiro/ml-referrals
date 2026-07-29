@@ -41,6 +41,12 @@ echo "==> service user ${APP_USER}"
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 
+# The repo is owned by mlref but git is run as root (push.sh, manual pulls).
+# Without this, git refuses with "detected dubious ownership" and pulls fail
+# silently — which once shipped stale code + units. Mark it safe for both users.
+git config --global --add safe.directory "$APP_DIR" || true
+sudo -u "$APP_USER" git config --global --add safe.directory "$APP_DIR" || true
+
 echo "==> virtualenv + dependencies"
 sudo -u "$APP_USER" python3 -m venv "$APP_DIR/.venv"
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
