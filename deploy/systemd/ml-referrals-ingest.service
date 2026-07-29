@@ -1,5 +1,6 @@
 [Unit]
 Description=ml-referrals — scrape Mercado Libre search listings, snapshot prices
+OnFailure=ml-referrals-failure@%n.service
 After=network-online.target
 Wants=network-online.target
 

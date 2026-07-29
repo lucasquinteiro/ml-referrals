@@ -91,6 +91,12 @@ def _parse_args() -> argparse.Namespace:
     sc.add_argument("--role", choices=["scraping", "affiliate"], default=None,
                     help="Check one role (default: both)")
 
+    nf = sub.add_parser(
+        "notify-failure",
+        help="Post a Slack alert that a systemd unit failed (used by OnFailure=)",
+    )
+    nf.add_argument("unit", help="The failed unit name")
+
     def _freshness_flags(p: argparse.ArgumentParser) -> None:
         p.add_argument("--max-age-hours", type=float, default=None,
                        help="Refuse to run if the data is older than this "
@@ -1251,6 +1257,25 @@ def cmd_login(args: argparse.Namespace, settings: Any) -> int:
     return auth.login(settings.site, args.role, persist=args.persist)
 
 
+def cmd_notify_failure(args: argparse.Namespace, settings: Any) -> int:
+    """Announce a failed systemd unit to Slack.
+
+    Wired as OnFailure= on each service, so *any* non-zero exit — a crash, an
+    unhandled exception, or a handled error that returns 1 — reaches you,
+    instead of dying quietly in the journal on the droplet.
+    """
+    from datetime import datetime
+    import notifier
+
+    unit = args.unit
+    notifier.notify(
+        f":rotating_light: *ml-referrals* — `{unit}` failed at "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M %Z')}.\n"
+        f"Logs:  `journalctl -u {unit} -n 40 --no-pager`"
+    )
+    return 0
+
+
 def cmd_session_check(args: argparse.Namespace, settings: Any) -> int:
     """Reopen saved sessions and confirm they're still authenticated.
 
@@ -1291,6 +1316,7 @@ def main() -> int:
     handlers = {
         "login": cmd_login,
         "session-check": cmd_session_check,
+        "notify-failure": cmd_notify_failure,
         "ingest": cmd_ingest,
         "simulate": cmd_simulate,
         "offers": cmd_offers,

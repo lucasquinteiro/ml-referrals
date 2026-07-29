@@ -119,7 +119,7 @@ def notify(text: str, *, webhook_url: Optional[str] = None) -> bool:
         return False
 
     if sent:
-        log_ok("posted ingest summary to Slack")
+        log_ok("posted to Slack")
     else:
-        log_step("SLACK_WEBHOOK_URL not set — skipping Slack summary")
+        log_step("SLACK_WEBHOOK_URL not set — skipping Slack message")
     return sent

@@ -1,0 +1,13 @@
+[Unit]
+Description=ml-referrals — report a failed unit (%i) to Slack
+
+[Service]
+Type=oneshot
+User=mlref
+WorkingDirectory=/opt/ml-referrals
+EnvironmentFile=/opt/ml-referrals/.env
+# %i is the failed unit's name, passed in by OnFailure=…@%n.service. Any
+# non-zero exit from a job — crash, exception, or a handled error that returns
+# 1 — lands a Slack alert instead of dying silently in the journal.
+ExecStart=/opt/ml-referrals/.venv/bin/python run.py notify-failure %i
+TimeoutStartSec=60

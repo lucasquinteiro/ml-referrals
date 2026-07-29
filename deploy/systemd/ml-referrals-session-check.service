@@ -1,5 +1,6 @@
 [Unit]
 Description=ml-referrals — check that the saved ML sessions are still logged in
+OnFailure=ml-referrals-failure@%n.service
 After=network-online.target
 Wants=network-online.target
 

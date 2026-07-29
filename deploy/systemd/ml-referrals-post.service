@@ -1,5 +1,6 @@
 [Unit]
 Description=ml-referrals — publish one tweet (mints link + captures card at post time)
+OnFailure=ml-referrals-failure@%n.service
 After=network-online.target
 Wants=network-online.target
 
