@@ -1016,6 +1016,7 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
             return 0
         _report_tier(deals, settings)
 
+        target = settings.get("post_target", "twitter")
         product = deals[0]
         links = _resolve_links([product], settings, store,
                                allow_untagged=args.dry_run)
@@ -1023,28 +1024,52 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
             return 1
         link = links[product.product_id]
         text = _render(product, link, settings, use_llm=args.llm)
-        _show(product, link, text, "DRY RUN" if args.dry_run else "POSTING")
+        header = "DRY RUN" if args.dry_run else f"POSTING → {target.upper()}"
+        _show(product, link, text, header)
 
         print()
         image_url, image_path = _resolve_image(product, settings, store)
-        try:
-            tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR,
-                                     dry_run=args.dry_run).post(
-                text, image_url=image_url, image_path=image_path)
-        except TwitterPostError as e:
-            log_err(f"post failed: {e}")
-            return 1
+
+        if target == "slack":
+            # Simulator: publish to a Slack channel instead of X, so the copy
+            # and cadence can be watched for a few days before going live.
+            tweet_id = None
+            if not args.dry_run:
+                import notifier
+                # Slack can only render a public URL; a local path can't be
+                # shown, so fall back to the product photo for the preview.
+                preview = image_url or (product.image if image_path else None)
+                try:
+                    sent = notifier.post_tweet_to_slack(text, image_url=preview)
+                except Exception as e:  # noqa: BLE001
+                    log_err(f"slack post failed: {e}")
+                    return 1
+                if not sent:
+                    log_err("post_target is 'slack' but SLACK_WEBHOOK_URL isn't set.")
+                    return 1
+                tweet_id = "slack"
+        else:
+            try:
+                tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR,
+                                         dry_run=args.dry_run).post(
+                    text, image_url=image_url, image_path=image_path)
+            except TwitterPostError as e:
+                log_err(f"post failed: {e}")
+                return 1
 
         store.record_post(
             product_id=product.product_id, tweet_id=tweet_id, tweet_text=text,
             affiliate_url=link, price=product.price,
             discount_pct=product.discount_pct, dry_run=args.dry_run,
         )
-        if tweet_id:
+        if args.dry_run:
+            log_ok("dry run — nothing published")
+        elif target == "slack":
+            log_ok("posted to Slack (simulator)")
+            log_step(f"{len(deals) - 1} offer(s) still queued for the next run")
+        elif tweet_id:
             log_ok(f"posted https://x.com/i/status/{tweet_id}")
             log_step(f"{len(deals) - 1} offer(s) still queued for the next run")
-        else:
-            log_ok("dry run — nothing published")
         return 0
     finally:
         store.close()

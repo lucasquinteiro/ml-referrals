@@ -34,9 +34,11 @@ class SupabaseStore:
         if not url or not key:
             raise RuntimeError(
                 "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. Set them in "
-                ".env (or as GitHub Actions secrets), or switch config.json "
-                '"store" back to "sqlite".'
+                ".env, or switch config.json \"store\" back to \"sqlite\"."
             )
+        # Be forgiving about a pasted URL: supabase-py wants just the project
+        # origin, so strip a trailing slash or an accidental /rest/v1 path.
+        url = url.split("/rest/")[0].rstrip("/")
         self.sb = create_client(url, key)
 
     # ---- runs ------------------------------------------------------------

@@ -68,6 +68,46 @@ def build_summary(
     return "\n".join(lines)
 
 
+def post_tweet_to_slack(
+    text: str,
+    *,
+    image_url: Optional[str] = None,
+    webhook_url: Optional[str] = None,
+) -> bool:
+    """Send a would-be tweet to Slack — the simulator target.
+
+    Renders the exact tweet text (affiliate link and all) plus the offer image,
+    so a Slack channel stands in for the X timeline while you evaluate the copy
+    and cadence for a few days before pointing it at the real account.
+
+    Only a public https image URL can be shown by Slack; a local file path
+    can't, so those are mentioned as a line instead. Raises on HTTP error so the
+    caller can treat a failed simulated-post like a failed real one.
+    """
+    import httpx
+
+    from lib.slack import _default_webhook_url
+
+    url = (webhook_url or _default_webhook_url()).strip()
+    if not url:
+        return False
+
+    blocks: list[dict[str, Any]] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+    ]
+    if image_url and image_url.startswith("http"):
+        blocks.append({"type": "image", "image_url": image_url,
+                       "alt_text": "offer"})
+    elif image_url:
+        blocks.append({"type": "context", "elements": [
+            {"type": "mrkdwn", "text": f"_image: {image_url}_"}]})
+
+    payload = {"text": text, "blocks": blocks}  # text = notification fallback
+    r = httpx.post(url, json=payload, timeout=10)
+    r.raise_for_status()
+    return True
+
+
 def notify(text: str, *, webhook_url: Optional[str] = None) -> bool:
     """Post to Slack. Returns False when unconfigured; never raises."""
     from lib.slack import send_slack_message

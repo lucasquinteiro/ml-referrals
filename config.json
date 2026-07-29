@@ -100,6 +100,7 @@
     "delay_between_link_batches_sec": 25
   },
   "use_llm_for_copy": true,
+  "post_target": "slack",
   "tweet_language": "es-AR",
   "tweet_image_mode": "screenshot",
   "tweet_hashtags": [],

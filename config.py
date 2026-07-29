@@ -150,6 +150,11 @@ _DEFAULTS: dict[str, Any] = {
     # is configured or the call fails.
     "use_llm_for_copy": True,
     "tweet_language": "es-AR",
+    # Where `post` publishes:
+    #   "twitter"  the real X account (cookie auth)
+    #   "slack"    a Slack channel via SLACK_WEBHOOK_URL — a simulator, so you
+    #              can watch the copy and cadence for a few days before going live
+    "post_target": "twitter",
     # What picture to attach:
     #   "product"    the product photo, uploaded natively (no browser)
     #   "screenshot" MercadoLibre's own offer card, captured from /ofertas —
