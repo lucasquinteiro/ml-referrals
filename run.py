@@ -544,48 +544,40 @@ def _render(product: Any, link: str, settings: Any, *, use_llm: bool) -> str:
 def _capture_offer_image(
     product: Any, settings: Any, store: Any, *, sources: Optional[list[str]] = None
 ) -> Optional[str]:
-    """Capture Mercado Libre's own offer card for one product, cache it, return
-    its stored reference (a URL or a local path), or None.
+    """Capture the product's desktop page, cache it, and return its stored
+    reference (a URL or local path), or None.
 
-    Tries each source in turn and stops at the first hit. Default order is
-    /ofertas first (anonymous — no session, no account risk) then search (needs
-    the burner session but covers products ML doesn't flag as offers). Every
-    page load is gated, so a post-time capture is just one more metered request.
+    One product-page load at desktop width — the layout people recognise, and a
+    single gated request instead of scanning a dozen listing pages for a card
+    (which is what was timing the post job out). The image is composed onto a
+    3:4 canvas so X shows it uncropped.
     """
-    import auth
     import card as card_mod
     from lib.log import log_err, log_step
     import screenshot as shot_mod
 
-    if sources is None:
-        sources = ["ofertas"]
-        if auth.has_session(auth.SCRAPING):
-            sources.append("search")
-
     shots = cfg.STATE_DIR / "shots"
-    for source in sources:
-        raw = shot_mod.capture_offer_card(
-            product, shots / f"{product.product_id}.png",
-            site=settings.site, source=source,
-        )
-        if not raw:
-            continue
-        composed = card_mod.compose_screenshot(
-            raw, shots / f"{product.product_id}-card.png", product=product
-        )
-        # On Supabase, push the PNG to Storage so any machine can fetch it; on
-        # SQLite the local path is the reference (the droplet reads its own disk).
-        try:
-            url = store.upload_image(product.product_id, composed)
-        except RuntimeError as e:
-            log_err(str(e))
-            return None
-        ref = url or str(composed)
-        store.save_offer_image(product_id=product.product_id, url=ref,
-                               local_path=str(composed))
-        log_step(f"cached offer card ({source})")
-        return ref
-    return None
+    raw = shot_mod.capture_product_page(
+        product, shots / f"{product.product_id}.png", site=settings.site
+    )
+    if not raw:
+        return None
+
+    composed = card_mod.compose_screenshot(
+        raw, shots / f"{product.product_id}-card.png", product=product
+    )
+    # On Supabase, push the PNG to Storage so any machine can fetch it; on
+    # SQLite the local path is the reference (the droplet reads its own disk).
+    try:
+        url = store.upload_image(product.product_id, composed)
+    except RuntimeError as e:
+        log_err(str(e))
+        return None
+    ref = url or str(composed)
+    store.save_offer_image(product_id=product.product_id, url=ref,
+                           local_path=str(composed))
+    log_step("cached desktop product screenshot")
+    return ref
 
 
 def _resolve_image(product: Any, settings: Any, store: Any = None):
@@ -1022,7 +1014,20 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
             return 0
         _report_tier(deals, settings)
 
-        target = settings.get("post_target", "twitter")
+        target = settings.get("post_target", "twitter_api")
+
+        # If we're targeting the API but the keys aren't in place yet, skip
+        # *before* spending any Mercado Libre requests on link/image work — and
+        # cleanly (exit 0), so scheduled runs don't fire failure alerts while
+        # you're still setting up the developer app.
+        if target in ("twitter_api", "twitter") and not args.dry_run:
+            from lib.twitter_api import have_credentials
+            if not have_credentials():
+                log_warn("post_target is 'twitter_api' but the API keys aren't set "
+                         "(TWITTER_API_KEY/SECRET, TWITTER_ACCESS_TOKEN/SECRET).\n"
+                         "  Skipping — add them to .env to go live.")
+                return 0
+
         product = deals[0]
         links = _resolve_links([product], settings, store,
                                allow_untagged=args.dry_run)
@@ -1054,7 +1059,25 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
                     log_err("post_target is 'slack' but SLACK_WEBHOOK_URL isn't set.")
                     return 1
                 tweet_id = "slack"
-        else:
+
+        elif target in ("twitter_api", "twitter"):
+            # Official X API (v2 tweet + v1.1 media). "twitter" kept as an alias.
+            from lib.twitter_api import (
+                MissingCredentials, TwitterAPIError, TwitterAPIPoster,
+            )
+            try:
+                tweet_id = TwitterAPIPoster(dry_run=args.dry_run).post(
+                    text, image_url=image_url, image_path=image_path)
+            except MissingCredentials as e:
+                # Not a failure — the keys just aren't in place yet. Skip
+                # cleanly so scheduled runs don't spam failure alerts.
+                log_warn(f"{e}\n  Skipping until the API keys are set.")
+                return 0
+            except TwitterAPIError as e:
+                log_err(f"post failed: {e}")
+                return 1
+
+        elif target == "twitter_cookie":
             try:
                 tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR,
                                          dry_run=args.dry_run).post(
@@ -1062,6 +1085,10 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
             except TwitterPostError as e:
                 log_err(f"post failed: {e}")
                 return 1
+        else:
+            log_err(f"unknown post_target '{target}' — use twitter_api, "
+                    "twitter_cookie, or slack")
+            return 1
 
         store.record_post(
             product_id=product.product_id, tweet_id=tweet_id, tweet_text=text,

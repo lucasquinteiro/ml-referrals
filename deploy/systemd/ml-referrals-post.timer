@@ -2,10 +2,11 @@
 Description=ml-referrals — post every 3 hours
 
 [Timer]
-# 8 tweets a day, every 2h across waking Buenos Aires hours (setup.sh sets the
-# box to America/Argentina/Buenos_Aires). `post` sends exactly one, so this
-# cadence IS the rate limit. The random delay keeps it off the exact hour.
-OnCalendar=*-*-* 08,10,12,14,16,18,20,22:30
+# One tweet every 2h from 10:00 to 02:00 Buenos Aires time (setup.sh sets the
+# box timezone) — 9 slots: 10,12,14,16,18,20,22,00,02. `post` sends exactly
+# one, so this cadence IS the rate limit. The random delay keeps it off the
+# exact hour.
+OnCalendar=*-*-* 10,12,14,16,18,20,22,00,02:30
 RandomizedDelaySec=600
 Persistent=true
 

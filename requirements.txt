@@ -8,4 +8,5 @@ beautifulsoup4        # parsing /ofertas over plain HTTP (no browser)
 Pillow                # composing the offer-card image
 python-dotenv
 openai>=1.0.0        # tweet copy (Groq via the OpenAI-compatible endpoint)
+tweepy>=4.14         # official Twitter/X API posting (post_target: twitter_api)
 supabase>=2.0.0      # only when store = "supabase"

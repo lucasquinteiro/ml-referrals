@@ -67,6 +67,114 @@ def _search_url(site: str, term: str, page: int) -> str:
     return f"{host}/{slug}_Desde_{(page - 1) * 50 + 1}_NoIndex_True"
 
 
+# The product-detail header block: gallery + title + price + buy box. This is
+# the "desktop layout" — captured straight from the product page, not the
+# compact listing card. Tried in order; first match wins.
+_PDP_SELECTORS = [
+    ".ui-pdp-container",   # the product content wrapper (starts below the nav)
+    "main",                # fallback
+]
+
+# Nav + anything carrying the logged-in user's identity. Hidden before the
+# shot so a product-page capture never leaks the account holder's name,
+# address or cart.
+_PDP_HIDE_CSS = """
+.nav-header, header.nav-header, .andes-navbar, nav.nav-menu,
+[class*="nav-header"], [class*="navbar"],
+.ui-pdp-notification, .andes-snackbar,
+[class*="cookie-consent"] { display:none !important; visibility:hidden !important; }
+"""
+
+
+def capture_product_page(
+    product: Any,
+    out_path: Path | str,
+    *,
+    site: str,
+    timeout_ms: int = 45_000,
+) -> Optional[Path]:
+    """Screenshot the product's *desktop* detail page — one page load.
+
+    This is the desktop layout (gallery, title, price, buy box), not the compact
+    listing card. Product pages are behind the login wall, so it uses the
+    scraping session; the run's nav/identity chrome is hidden first so nothing
+    personal is captured. One gated request, versus scanning a dozen listing
+    pages for a card — which is both faster and what fixes the post timeouts.
+    """
+    from playwright.sync_api import sync_playwright
+
+    import auth
+    from lib import mlgate
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not auth.has_session(auth.SCRAPING):
+        log_warn("screenshot: product pages need `./run login --role scraping`")
+        return None
+
+    state = auth.storage_state_path(auth.SCRAPING)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
+        try:
+            ctx = browser.new_context(
+                locale="es-AR",
+                user_agent=UA,
+                # A wide desktop viewport so ML serves the desktop layout, not
+                # the narrow/mobile breakpoint.
+                viewport={"width": 1440, "height": 1600},
+                device_scale_factor=2,
+                storage_state=str(state) if state else None,
+            )
+            page = ctx.new_page()
+            mlgate.wait(mlgate.SCRAPING, label="pdp screenshot")
+            page.goto(product.url, wait_until="domcontentloaded", timeout=timeout_ms)
+            if any(m in page.url for m in _WALL_MARKERS):
+                mlgate.trip(mlgate.SCRAPING, "pdp wall")
+                log_warn("screenshot: product page hit the login wall — session "
+                         "expired; re-run `./run login --role scraping`")
+                return None
+            page.wait_for_timeout(2500)
+            page.add_style_tag(content=_PDP_HIDE_CSS)
+            page.wait_for_timeout(400)
+
+            # Clip the TOP of the product container — the hero row: gallery,
+            # title, price, buy box. That's the recognisable desktop layout, and
+            # starting at the container (well below the nav) structurally leaves
+            # out the header where the account holder's name and address sit.
+            box = None
+            for sel in _PDP_SELECTORS:
+                el = page.locator(sel).first
+                try:
+                    if el.count():
+                        b = el.bounding_box()
+                        if b and b["height"] > 300 and b["width"] > 400:
+                            box = b
+                            break
+                except Exception:  # noqa: BLE001
+                    continue
+
+            if box:
+                clip = {
+                    "x": max(0, box["x"]),
+                    "y": max(0, box["y"]),
+                    "width": box["width"],
+                    "height": min(920, box["height"]),  # hero row only
+                }
+            else:
+                # Fallback: a fixed band below where the nav would be.
+                clip = {"x": 120, "y": 150, "width": 1200, "height": 900}
+
+            page.screenshot(path=str(out_path), clip=clip)
+            log_step("captured desktop product page")
+            return out_path
+        finally:
+            browser.close()
+
+
 def capture_offer_card(
     product: Any,
     out_path: Path | str,

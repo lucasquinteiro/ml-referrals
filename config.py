@@ -151,15 +151,15 @@ _DEFAULTS: dict[str, Any] = {
     "use_llm_for_copy": True,
     "tweet_language": "es-AR",
     # Where `post` publishes:
-    #   "twitter"  the real X account (cookie auth)
-    #   "slack"    a Slack channel via SLACK_WEBHOOK_URL — a simulator, so you
-    #              can watch the copy and cadence for a few days before going live
-    "post_target": "twitter",
+    #   "twitter_api"     the official X API (developer app keys; recommended)
+    #   "twitter_cookie"  the old cookie/session poster (no API needed)
+    #   "slack"           a Slack channel via SLACK_WEBHOOK_URL — a simulator
+    "post_target": "twitter_api",
     # What picture to attach:
     #   "product"    the product photo, uploaded natively (no browser)
-    #   "screenshot" MercadoLibre's own offer card, captured from /ofertas —
-    #                their real typography and layout, but it needs Chromium
-    #                and only works while the offer is still listed there
+    #   "screenshot" MercadoLibre's own desktop product page (gallery, title,
+    #                price, buy box) — captured with the scraping session, one
+    #                page load, cropped to exclude the nav/account chrome
     #   "none"       text only
     # Any failure falls back down this list rather than losing the tweet.
     "tweet_image_mode": "product",

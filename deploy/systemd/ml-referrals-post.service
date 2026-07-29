@@ -13,7 +13,10 @@ EnvironmentFile=/opt/ml-referrals/.env
 # Mercado Libre's own offer card — both cached, both gated, so this is at most
 # two metered ML requests.
 ExecStart=/opt/ml-referrals/.venv/bin/python run.py post
-TimeoutStartSec=1200
+# One product-page screenshot + one link mint, both gated (~45s each). 15 min
+# is ample headroom; the old 20-min timeout was only ever hit by the retired
+# 12-page card scan.
+TimeoutStartSec=900
 Nice=10
 
 [Install]
