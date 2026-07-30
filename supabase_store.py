@@ -304,23 +304,36 @@ class SupabaseStore:
     def record_post(
         self,
         *,
-        product_id: str,
+        product: Any,
         tweet_id: Optional[str],
         tweet_text: str,
         affiliate_url: str,
-        price: Optional[float],
-        discount_pct: Optional[int],
+        target: Optional[str] = None,
+        tweet_url: Optional[str] = None,
+        char_count: Optional[int] = None,
+        has_image: bool = False,
         dry_run: bool = False,
     ) -> None:
+        """Append one row to mlr_posts, snapshotting the offer's fields at post
+        time so the record stays truthful after the price later moves."""
         self.sb.table("mlr_posts").insert(
             {
-                "product_id": product_id,
+                "product_id": product.product_id,
                 "posted_at": _now_iso(),
                 "tweet_id": tweet_id,
+                "tweet_url": tweet_url,
                 "tweet_text": tweet_text,
                 "affiliate_url": affiliate_url,
-                "price": price,
-                "discount_pct": discount_pct,
+                "target": target,
+                "title": product.title,
+                "matched_label": product.matched_label,
+                "matched_keyword": product.matched_keyword,
+                "price": product.price,
+                "original_price": product.original_price,
+                "currency": product.currency,
+                "discount_pct": product.discount_pct,
+                "char_count": char_count,
+                "has_image": has_image,
                 "dry_run": dry_run,
             }
         ).execute()

@@ -4,7 +4,9 @@ SQLite-backed store: product catalogue, price history, and posted-tweet log.
 Three tables:
   products      one row per product we've ever seen (latest metadata wins)
   price_history one row per (product, run) price observation — append-only
-  posts         one row per tweet we sent, for dedupe + a record of the link
+  posts         one row per tweet we sent — the offer it promoted, the link,
+                the tweet id/url, and metadata snapshotted at post time for
+                later analysis (category, prices, char count, image, target)
 
 Deliberately no analysis on top of price_history yet: this run just records
 snapshots so that a later "cheapest in 90 days" check has data to stand on.
@@ -52,15 +54,24 @@ CREATE INDEX IF NOT EXISTS idx_price_history_product
     ON price_history(product_id, observed_at);
 
 CREATE TABLE IF NOT EXISTS posts (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id    TEXT NOT NULL,
-    posted_at     TEXT NOT NULL,
-    tweet_id      TEXT,
-    tweet_text    TEXT,
-    affiliate_url TEXT,
-    price         REAL,
-    discount_pct  INTEGER,
-    dry_run       INTEGER DEFAULT 0
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id      TEXT NOT NULL,        -- the offer this tweet promotes
+    posted_at       TEXT NOT NULL,        -- UTC ISO timestamp
+    tweet_id        TEXT,                 -- X status id ("slack" for the simulator)
+    tweet_url       TEXT,                 -- canonical permalink (real X posts only)
+    tweet_text      TEXT,
+    affiliate_url   TEXT,                 -- exact link that went out
+    target          TEXT,                 -- twitter_api | twitter_cookie | slack
+    title           TEXT,                 -- product title at post time
+    matched_label   TEXT,                 -- offer category
+    matched_keyword TEXT,                 -- keyword that surfaced it
+    price           REAL,
+    original_price  REAL,
+    currency        TEXT,
+    discount_pct    INTEGER,
+    char_count      INTEGER,              -- tweet length as X counts it
+    has_image       INTEGER DEFAULT 0,    -- whether a picture was attached
+    dry_run         INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_posts_product ON posts(product_id, posted_at);
 
@@ -108,6 +119,35 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a DB was first created.
+
+        `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a store
+        made before the richer post log gets the new columns backfilled here.
+        Old rows keep NULL for the additions, which is exactly right — we don't
+        have that metadata for tweets sent before it was recorded.
+        """
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(posts)")}
+        additions = {
+            "tweet_url": "TEXT",
+            "target": "TEXT",
+            "title": "TEXT",
+            "matched_label": "TEXT",
+            "matched_keyword": "TEXT",
+            "original_price": "REAL",
+            "currency": "TEXT",
+            "char_count": "INTEGER",
+            "has_image": "INTEGER DEFAULT 0",
+        }
+        added = False
+        for name, decl in additions.items():
+            if name not in have:
+                self.conn.execute(f"ALTER TABLE posts ADD COLUMN {name} {decl}")
+                added = True
+        if added:
+            self.conn.commit()
 
     # ---- runs ------------------------------------------------------------
 
@@ -341,21 +381,35 @@ class Store:
     def record_post(
         self,
         *,
-        product_id: str,
+        product: Any,
         tweet_id: Optional[str],
         tweet_text: str,
         affiliate_url: str,
-        price: Optional[float],
-        discount_pct: Optional[int],
+        target: Optional[str] = None,
+        tweet_url: Optional[str] = None,
+        char_count: Optional[int] = None,
+        has_image: bool = False,
         dry_run: bool = False,
     ) -> None:
+        """Append one row to the post log.
+
+        The offer's own fields (title, category, prices) are snapshotted from
+        `product` at post time so the record stays truthful even after the
+        product's price later moves in price_history.
+        """
         self.conn.execute(
-            """INSERT INTO posts (product_id, posted_at, tweet_id, tweet_text,
-                                  affiliate_url, price, discount_pct, dry_run)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO posts (
+                   product_id, posted_at, tweet_id, tweet_url, tweet_text,
+                   affiliate_url, target, title, matched_label, matched_keyword,
+                   price, original_price, currency, discount_pct, char_count,
+                   has_image, dry_run)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                product_id, _now_iso(), tweet_id, tweet_text, affiliate_url,
-                price, discount_pct, int(dry_run),
+                product.product_id, _now_iso(), tweet_id, tweet_url, tweet_text,
+                affiliate_url, target, product.title, product.matched_label,
+                product.matched_keyword, product.price, product.original_price,
+                product.currency, product.discount_pct, char_count,
+                int(has_image), int(dry_run),
             ),
         )
         self.conn.commit()

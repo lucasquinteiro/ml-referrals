@@ -141,29 +141,28 @@ def _rounded_panel(size: tuple[int, int], radius: int, colour: tuple[int, int, i
 def compose_screenshot(
     shot_path: Path | str, out_path: Path | str, *, product: Any = None
 ) -> Path:
-    """Place the offer card on a clean 4:5 canvas — no blur, no letterbox tricks.
+    """Wrap the offer card in a thin white margin — nothing more.
 
-    The card is portrait; X shows a 4:5 image (1080x1350) close to fully in the
-    timeline. The card is scaled to fill the frame's height and centred on a
-    plain white background, so any side margin is invisible against the card's
-    own white — it just looks like a card, which was the point. (The earlier
-    blurred-backdrop version is gone; that blur was the "modal" look.)
+    The element screenshot is already cropped tight to the card, so there's no
+    letterbox and no blur (both are gone): just a small even border on the
+    card's own white, so it reads as a clean framed card at its natural aspect.
+    Any trailing whitespace at the bottom is trimmed first.
     """
-    from PIL import Image
+    from PIL import Image, ImageChops
 
-    # 4:5 — as tall as X reliably shows without cropping in-feed.
-    cw, ch = 1080, 1350
-    margin = 24
-
+    pad = 20
     shot = Image.open(shot_path).convert("RGB")
-    canvas = Image.new("RGB", (cw, ch), CARD_BG)
 
-    # Contain: scale to fit within the frame (minus a small margin), keeping
-    # the whole card visible and as large as possible.
-    scale = min((cw - margin) / shot.width, (ch - margin) / shot.height)
-    w, h = max(1, int(shot.width * scale)), max(1, int(shot.height * scale))
-    card = shot.resize((w, h), Image.LANCZOS)
-    canvas.paste(card, ((cw - w) // 2, (ch - h) // 2))
+    # Trim uniform border whitespace (the card element can include trailing
+    # white below its content) so the bottom margin isn't oversized.
+    bg = Image.new("RGB", shot.size, (255, 255, 255))
+    diff = ImageChops.difference(shot, bg)
+    box = diff.getbbox()
+    if box:
+        shot = shot.crop(box)
+
+    canvas = Image.new("RGB", (shot.width + 2 * pad, shot.height + 2 * pad), CARD_BG)
+    canvas.paste(shot, (pad, pad))
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -825,8 +825,9 @@ NAMED_QUERIES: dict[str, tuple[str, str]] = {
     ),
     "posted": (
         "Tweets sent, newest first",
-        """SELECT posted_at AS at, tweet_id, substr(tweet_text,1,60) AS text,
-                  price, discount_pct AS pct
+        """SELECT posted_at AS at, target, matched_label AS cat,
+                  discount_pct AS pct, substr(title,1,40) AS title,
+                  tweet_url, affiliate_url
            FROM posts WHERE dry_run = 0 ORDER BY posted_at DESC LIMIT 25""",
     ),
     "runs": (
@@ -1039,6 +1040,7 @@ def _publish_one(
     render the tweet, capture the image, send, and record. Returns 0 on success
     or a clean skip, 1 on error.
     """
+    import tweets as tw
     from lib.log import log_err, log_ok, log_step, log_warn
     from lib.twitter_post import TwitterPoster, TwitterPostError
 
@@ -1104,10 +1106,17 @@ def _publish_one(
         log_err(f"unknown target '{target}' — use twitter_api, twitter_cookie, or slack")
         return 1
 
+    # A real X post has a numeric status id and a canonical permalink; Slack
+    # posts ("slack") and dry runs (None) have neither.
+    tweet_url = (
+        f"https://x.com/i/status/{tweet_id}"
+        if tweet_id and tweet_id.isdigit() else None
+    )
     store.record_post(
-        product_id=product.product_id, tweet_id=tweet_id, tweet_text=text,
-        affiliate_url=link, price=product.price,
-        discount_pct=product.discount_pct, dry_run=dry_run,
+        product=product, tweet_id=tweet_id, tweet_url=tweet_url, tweet_text=text,
+        affiliate_url=link, target=target,
+        char_count=tw.tweet_length(text, link),
+        has_image=bool(image_url or image_path), dry_run=dry_run,
     )
     if dry_run:
         log_ok("dry run — nothing published")

@@ -47,6 +47,10 @@ _HIDE_OVERLAYS_CSS = """
 [class*="onboarding"],
 [class*="modal-backdrop"],
 [class*="andes-modal"] { display: none !important; visibility: hidden !important; }
+/* The "Otra opción de compra" secondary buy-box makes the card long and
+   confusing (it shows a worse second price). Drop it so the card is just the
+   headline offer: photo, title, price. */
+.poly-component__buy-box { display: none !important; }
 """
 
 # 3x gives a ~850px-wide capture of a ~284px card — sharp on retina timelines
