@@ -26,7 +26,45 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-_TEMPLATE = Path(__file__).resolve().parent / "templates" / "offer_card.html"
+_HERE = Path(__file__).resolve().parent
+_TEMPLATE = _HERE / "templates" / "offer_card.html"
+_FONT_DIR = _HERE / "templates" / "fonts"
+
+# Montserrat (SIL OFL) stands in for Mercado Libre's Proxima Nova, which is a
+# commercial font we can't redistribute. Weights map to the card: 400 body,
+# 600 price/discount/shipping, 700 the status pill.
+_FONT_WEIGHTS = {400: "Montserrat-400.woff2", 600: "Montserrat-600.woff2",
+                 700: "Montserrat-700.woff2"}
+
+# ML blue, the colour of the andes rating star.
+_STAR_BLUE = "#3483fa"
+
+
+def _font_face_css() -> str:
+    """@font-face block with each weight inlined as a data: URI (offline-safe)."""
+    faces = []
+    for weight, name in _FONT_WEIGHTS.items():
+        path = _FONT_DIR / name
+        if not path.is_file():
+            continue
+        b64 = base64.b64encode(path.read_bytes()).decode()
+        faces.append(
+            "@font-face{font-family:'Montserrat';font-style:normal;"
+            f"font-weight:{weight};font-display:block;"
+            f"src:url(data:font/woff2;base64,{b64}) format('woff2');}}"
+        )
+    return "<style>" + "".join(faces) + "</style>" if faces else ""
+
+
+def _stars_svg(rating: float) -> str:
+    """Five andes-style stars (filled to the rounded rating) as inline SVG."""
+    full = int(round(rating))
+    star = ('<svg viewBox="0 0 24 24" fill="{c}"><path d="M12 17.27l6.18 3.73'
+            '-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73'
+            'L5.82 21z"/></svg>')
+    filled = star.format(c=_STAR_BLUE)
+    empty = star.format(c="#d5d9e0")
+    return filled * full + empty * (5 - full)
 
 
 def _fmt_price(value: Optional[float], currency: str = "ARS") -> str:
@@ -100,8 +138,7 @@ def _fill(product: Any) -> str:
     rating_html = ""
     rating = g("rating")
     if rating:
-        full = int(round(rating))
-        stars = "★" * full + "☆" * (5 - full)
+        stars = _stars_svg(rating)
         sold = g("sold") or ""
         count = f'<span class="poly-rating__count">{_esc(sold)}</span>' if sold else ""
         rating_html = (
@@ -124,7 +161,9 @@ def _fill(product: Any) -> str:
     }
 
     tmpl = _TEMPLATE.read_text(encoding="utf-8")
-    return re.sub(r"\{\{(\w+)\}\}", lambda m: tokens.get(m.group(1), ""), tmpl)
+    filled = re.sub(r"\{\{(\w+)\}\}", lambda m: tokens.get(m.group(1), ""), tmpl)
+    # Inline the fonts ahead of the markup so they're loaded before layout.
+    return _font_face_css() + filled
 
 
 def render(product: Any, out_path: Path | str, *, brand: str = "", scale: int = 2) -> Path:
@@ -153,6 +192,8 @@ def render(product: Any, out_path: Path | str, *, brand: str = "", scale: int = 
         try:
             page = browser.new_context(device_scale_factor=scale).new_page()
             page.set_content(html_str, wait_until="networkidle")
+            # Don't shoot before the inlined font has swapped in.
+            page.evaluate("document.fonts.ready")
             # Screenshot the framed node (card + its ML-grey margin), not the
             # bare card, so the result reads as a card sitting on the ML page.
             page.locator("#frame").screenshot(path=str(out_path))

@@ -27,7 +27,7 @@
     background: #fff;
     border-radius: 6px;
     box-shadow: 0 1px 2px 0 rgba(0,0,0,.2);
-    font-family: -apple-system, "Helvetica Neue", "Liberation Sans", Arial, sans-serif;
+    font-family: "Montserrat", -apple-system, "Helvetica Neue", "Liberation Sans", Arial, sans-serif;
     overflow: hidden;
   }
 
@@ -78,7 +78,8 @@
 
   .poly-rating { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
   .poly-rating__score { font-size: 12px; color: rgba(0,0,0,.55); }
-  .poly-rating__stars { font-size: 12px; color: #3483fa; letter-spacing: -1px; }
+  .poly-rating__stars { display: inline-flex; align-items: center; gap: 1px; }
+  .poly-rating__stars svg { width: 11px; height: 11px; display: block; }
   .poly-rating__count { font-size: 12px; color: rgba(0,0,0,.45); }
 </style>
 
