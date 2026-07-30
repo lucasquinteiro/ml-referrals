@@ -20,13 +20,17 @@ from scraper import Product
 TWEET_LIMIT = 280
 LINK_WEIGHT = 23  # X's t.co length, counted for any URL
 
-# Shark Deals branding: a 🦈 leads every template (varied so the timeline isn't
-# monotonous), and an optional signature line closes it (config tweet_signature).
+# The link MUST stay above X's "Show more" fold, or the affiliate link is
+# invisible in the timeline and conversions die. So every template puts the link
+# on line 2 — right after a single hook line — with NO blank lines, keeping the
+# tweet short enough that X rarely folds it at all. The title (which the image
+# already shows) goes last, where truncation is harmless. A 🦈 leads and closes
+# each; they vary so the timeline isn't monotonous.
 _TEMPLATES = [
-    "🦈 {discount}% OFF en {label} 🔥\n\n{title}\n\n❌ Antes {was}\n💰 Ahorrás {saved}\n\n✅ AHORA {now}\n\n{link}",
-    "🦈⚡ ¡BAJÓ {discount}%! 🔥\n\n{title}\n\n🏷️ Antes {was}\n🤑 Te ahorrás {saved}\n\n💸 AHORA {now}\n\n{link}",
-    "🦈 Alerta de precio · {label} 🔥\n\n{title}\n\n📉 {discount}% OFF — antes {was}\n💵 {saved} menos\n\n✅ AHORA {now}\n\n{link}",
-    "🦈🔥 {title}\n\n🏷️ Antes {was} · {discount}% OFF\n💰 Ahorro: {saved}\n\n✅ AHORA {now}\n\n{link}",
+    "🦈 {discount}% OFF · AHORA {now} (antes {was})\n{link}\n{title} · ahorrás {saved} 🦈",
+    "🦈 ¡Bajó {discount}%! AHORA {now} 🔥\n{link}\n{title} · antes {was} 🦈",
+    "🦈 {label}: {now} · {discount}% OFF 🔥\n{link}\n{title} · {saved} menos 🦈",
+    "🦈 {now} 🔥 {discount}% OFF (antes {was})\n{link}\n{title} 🦈",
 ]
 
 _SYSTEM = (
@@ -68,14 +72,24 @@ def _tail(settings: Any) -> str:
     return "\n\n" + " · ".join(bits) if bits else ""
 
 
-def _assemble(body: str, link: str, tail: str) -> str:
-    """Fit body + link + tail into 280, trimming the body if needed."""
-    overhead = LINK_WEIGHT + len(tail) + 1  # +1 for the newline before the link
-    room = TWEET_LIMIT - overhead
-    body = body.strip()
-    if len(body) > room:
-        body = _shorten_title(body, room)
-    return f"{body}\n{link}{tail}"
+def _link_on_line_two(body: str, link: str, tail: str) -> str:
+    """Put the link on line 2, so it's above X's "Show more" fold no matter how
+    the rest wraps. First line stays the hook; anything after it follows the
+    link. Blank lines are collapsed to keep the tweet compact, then it's trimmed
+    to fit 280."""
+    lines = [ln for ln in body.strip().splitlines() if ln.strip()]
+    hook = lines[0] if lines else ""
+    rest = " · ".join(lines[1:]).strip()
+
+    # Budget: hook + link + rest + tail must fit 280 (link counts as 23).
+    room = TWEET_LIMIT - LINK_WEIGHT - len(tail) - len(hook) - 2
+    if rest and len(rest) > room:
+        rest = _shorten_title(rest, max(0, room))
+
+    out = f"{hook}\n{link}"
+    if rest:
+        out += f"\n{rest}"
+    return out + tail
 
 
 def tweet_length(text: str, link: str) -> int:
@@ -130,13 +144,14 @@ def generate_with_llm(product: Product, link: str, settings: Any) -> Optional[st
     prompt = (
         f"Escribí un tweet para esta oferta de Mercado Libre.\n\n{facts}\n"
         f"Reglas:\n"
-        f"- Empezá con el emoji de tiburón 🦈 (la marca es 'Shark Deals').\n"
-        f"- Máximo {budget} caracteres (NO incluyas el link, se agrega después).\n"
-        f"- Resaltá el porcentaje de descuento EN MAYÚSCULAS (ej: 'BAJÓ 30%', '30% OFF').\n"
-        f"- Poné el precio actual en su propia línea, separado por una línea en blanco del resto de los montos.\n"
+        f"- La PRIMERA línea es el gancho: 🦈 + descuento EN MAYÚSCULAS + precio "
+        f"actual (ej: '🦈 BAJÓ 40% · AHORA $99.999'). Tiene que ser corta.\n"
+        f"- Después del gancho va el nombre del producto en 1 línea.\n"
+        f"- Máximo 2 líneas cortas, SIN líneas en blanco. NO incluyas el link "
+        f"(se agrega automáticamente en la segunda línea).\n"
+        f"- Máximo {budget} caracteres.\n"
         f"- Usá 2 o 3 emojis como mucho (uno es el 🦈 del inicio).\n"
-        f"- No inventes características que no estén arriba.\n"
-        f"- No agregues hashtags.\n"
+        f"- No inventes características que no estén arriba. No agregues hashtags.\n"
     )
 
     try:
@@ -159,7 +174,7 @@ def generate_with_llm(product: Product, link: str, settings: Any) -> Optional[st
     text = text.strip().strip('"').strip()
     if not text:
         return None
-    return _assemble(text, link, tail)
+    return _link_on_line_two(text, link, tail)
 
 
 def build_tweet(product: Product, link: str, settings: Any, *, deterministic: bool = False) -> str:
