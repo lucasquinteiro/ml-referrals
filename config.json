@@ -101,6 +101,7 @@
   },
   "use_llm_for_copy": true,
   "post_target": "twitter_api",
+  "mirror_to_slack": true,
   "tweet_language": "es-AR",
   "tweet_signature": "",
   "tweet_image_mode": "screenshot",

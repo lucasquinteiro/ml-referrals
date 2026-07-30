@@ -563,22 +563,35 @@ def _render(product: Any, link: str, settings: Any, *, use_llm: bool) -> str:
 def _capture_offer_image(
     product: Any, settings: Any, store: Any, *, sources: Optional[list[str]] = None
 ) -> Optional[str]:
-    """Capture the product's desktop page, cache it, and return its stored
-    reference (a URL or local path), or None.
+    """Capture the compact Mercado Libre offer card, cache it, and return its
+    stored reference (a URL or local path), or None.
 
-    One product-page load at desktop width — the layout people recognise, and a
-    single gated request instead of scanning a dozen listing pages for a card
-    (which is what was timing the post job out). The image is composed onto a
-    3:4 canvas so X shows it uncropped.
+    The mobile-style card — product photo, title, discount pill, price. Found by
+    searching the product's own keyword first (it lands on the first page or
+    two), then /ofertas as a fallback. Page scans are capped low so a miss can
+    never run long — that unbounded 12-page scan was what timed the post out.
     """
+    import auth
     import card as card_mod
-    from lib.log import log_err, log_step
+    from lib.log import log_step
     import screenshot as shot_mod
 
     shots = cfg.STATE_DIR / "shots"
-    raw = shot_mod.capture_product_page(
-        product, shots / f"{product.product_id}.png", site=settings.site
-    )
+    # Search by the product's keyword first — it was scraped from that search,
+    # so it's near the top. Falls back to /ofertas (anonymous).
+    attempts: list[tuple[str, str]] = []
+    if auth.has_session(auth.SCRAPING) and product.matched_keyword:
+        attempts.append(("search", product.matched_keyword))
+    attempts.append(("ofertas", ""))
+
+    raw = None
+    for source, term in attempts:
+        raw = shot_mod.capture_offer_card(
+            product, shots / f"{product.product_id}.png",
+            site=settings.site, source=source, search_term=term, max_pages=3,
+        )
+        if raw:
+            break
     if not raw:
         return None
 
@@ -1084,10 +1097,24 @@ def _publish_one(
     )
     if dry_run:
         log_ok("dry run — nothing published")
-    elif target == "slack":
+        return 0
+    if target == "slack":
         log_ok("posted to Slack (simulator)")
-    elif tweet_id:
-        log_ok(f"posted https://x.com/i/status/{tweet_id}")
+        return 0
+    if tweet_id:
+        url = f"https://x.com/i/status/{tweet_id}"
+        log_ok(f"posted {url}")
+        # Mirror every real X post to Slack, so the channel is a running log of
+        # what actually went out (not just the simulator).
+        if settings.get("mirror_to_slack", True):
+            import notifier
+            preview = image_url or (product.image if image_path else None)
+            try:
+                notifier.post_tweet_to_slack(
+                    f":bird: *Posted to X* — {url}\n\n{text}", image_url=preview)
+                log_step("mirrored to Slack")
+            except Exception as e:  # noqa: BLE001 - a failed mirror mustn't fail the post
+                log_warn(f"Slack mirror failed ({type(e).__name__}: {e})")
     return 0
 
 

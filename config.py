@@ -158,11 +158,14 @@ _DEFAULTS: dict[str, Any] = {
     #   "twitter_cookie"  the old cookie/session poster (no API needed)
     #   "slack"           a Slack channel via SLACK_WEBHOOK_URL — a simulator
     "post_target": "twitter_api",
+    # When posting to X, also mirror the tweet to Slack, so the channel is a
+    # running log of what actually went out.
+    "mirror_to_slack": True,
     # What picture to attach:
     #   "product"    the product photo, uploaded natively (no browser)
-    #   "screenshot" MercadoLibre's own desktop product page (gallery, title,
-    #                price, buy box) — captured with the scraping session, one
-    #                page load, cropped to exclude the nav/account chrome
+    #   "screenshot" MercadoLibre's own compact offer card (photo, title,
+    #                discount, price) — found by searching the product's keyword,
+    #                on a clean white canvas (no blurred backdrop)
     #   "none"       text only
     # Any failure falls back down this list rather than losing the tweet.
     "tweet_image_mode": "product",

@@ -23,10 +23,10 @@ LINK_WEIGHT = 23  # X's t.co length, counted for any URL
 # Shark Deals branding: a 🦈 leads every template (varied so the timeline isn't
 # monotonous), and an optional signature line closes it (config tweet_signature).
 _TEMPLATES = [
-    "🦈 {discount}% OFF en {label}\n\n{title}\n\n❌ {was}\n✅ {now}\n💰 Ahorrás {saved}\n\n{link}",
-    "🦈⚡ ¡Bajó {discount}%!\n\n{title}\n\n💸 {was} → {now}\n🤑 Te ahorrás {saved}\n\n{link}",
-    "🦈 Alerta de precio · {label}\n\n{title}\n\n📉 {discount}% OFF — de {was} a {now}\n💵 {saved} menos\n\n{link}",
-    "🦈🔥 {title}\n\n🏷️ Antes {was}\n✅ Ahora {now} ({discount}% OFF)\n💰 Ahorro: {saved}\n\n{link}",
+    "🦈 {discount}% OFF en {label}\n\n{title}\n\n❌ Antes {was}\n💰 Ahorrás {saved}\n\n✅ AHORA {now}\n\n{link}",
+    "🦈⚡ ¡BAJÓ {discount}%!\n\n{title}\n\n🏷️ Antes {was}\n🤑 Te ahorrás {saved}\n\n💸 AHORA {now}\n\n{link}",
+    "🦈 Alerta de precio · {label}\n\n{title}\n\n📉 {discount}% OFF — antes {was}\n💵 {saved} menos\n\n✅ AHORA {now}\n\n{link}",
+    "🦈🔥 {title}\n\n🏷️ Antes {was} · {discount}% OFF\n💰 Ahorro: {saved}\n\n✅ AHORA {now}\n\n{link}",
 ]
 
 _SYSTEM = (
@@ -132,7 +132,8 @@ def generate_with_llm(product: Product, link: str, settings: Any) -> Optional[st
         f"Reglas:\n"
         f"- Empezá con el emoji de tiburón 🦈 (la marca es 'Shark Deals').\n"
         f"- Máximo {budget} caracteres (NO incluyas el link, se agrega después).\n"
-        f"- Mencioná el precio actual y el descuento.\n"
+        f"- Resaltá el porcentaje de descuento EN MAYÚSCULAS (ej: 'BAJÓ 30%', '30% OFF').\n"
+        f"- Poné el precio actual en su propia línea, separado por una línea en blanco del resto de los montos.\n"
         f"- Usá 2 o 3 emojis como mucho (uno es el 🦈 del inicio).\n"
         f"- No inventes características que no estén arriba.\n"
         f"- No agregues hashtags.\n"

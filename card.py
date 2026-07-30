@@ -28,6 +28,9 @@ PAD = 56
 # makes the cutout read as deliberate rather than as a pasted rectangle.
 BG = (17, 19, 24)
 PANEL = (255, 255, 255)
+# Background for compose_screenshot: white, so it disappears against the card's
+# own white edges — the card just looks like a card, no visible frame.
+CARD_BG = (255, 255, 255)
 TEXT = (245, 246, 248)
 MUTED = (150, 156, 168)
 ACCENT = (0, 200, 110)      # discount green, close to ML's own
@@ -138,43 +141,29 @@ def _rounded_panel(size: tuple[int, int], radius: int, colour: tuple[int, int, i
 def compose_screenshot(
     shot_path: Path | str, out_path: Path | str, *, product: Any = None
 ) -> Path:
-    """Place a captured offer card on a 16:9 canvas.
+    """Place the offer card on a clean 4:5 canvas — no blur, no letterbox tricks.
 
-    The raw card is portrait (~850x1600, aspect 0.53). X won't display anything
-    that tall uncropped, and cropping would slice off the price — the one thing
-    the image exists to show. A 3:4 canvas is the tallest X shows in full, and
-    it leaves the card nearly filling the frame rather than stranded in the
-    middle of a 16:9 letterbox.
-
-    The margins are filled with a blurred, darkened copy of the card so the
-    result reads as designed rather than as padding.
+    The card is portrait; X shows a 4:5 image (1080x1350) close to fully in the
+    timeline. The card is scaled to fill the frame's height and centred on a
+    plain white background, so any side margin is invisible against the card's
+    own white — it just looks like a card, which was the point. (The earlier
+    blurred-backdrop version is gone; that blur was the "modal" look.)
     """
-    from PIL import Image, ImageEnhance, ImageFilter
+    from PIL import Image
 
-    # 3:4 — the tallest aspect X renders without cropping.
-    cw, ch = 1080, 1440
+    # 4:5 — as tall as X reliably shows without cropping in-feed.
+    cw, ch = 1080, 1350
+    margin = 24
 
     shot = Image.open(shot_path).convert("RGB")
-    canvas = Image.new("RGB", (cw, ch), BG)
+    canvas = Image.new("RGB", (cw, ch), CARD_BG)
 
-    # Backdrop: the card itself, blown up, blurred and dimmed.
-    backdrop = shot.copy()
-    ratio = max(cw / backdrop.width, ch / backdrop.height)
-    backdrop = backdrop.resize(
-        (int(backdrop.width * ratio) + 1, int(backdrop.height * ratio) + 1),
-        Image.LANCZOS,
-    ).filter(ImageFilter.GaussianBlur(28))
-    backdrop = ImageEnhance.Brightness(backdrop).enhance(0.35)
-    canvas.paste(backdrop, ((cw - backdrop.width) // 2, (ch - backdrop.height) // 2))
-
-    # The card, scaled to just under full height.
-    target_h = ch - 36
-    scale = target_h / shot.height
-    card = shot.resize((max(1, int(shot.width * scale)), target_h), Image.LANCZOS)
-    if card.width > cw - 36:  # very wide cards: fit to width instead
-        scale = (cw - 36) / shot.width
-        card = shot.resize((cw - 36, max(1, int(shot.height * scale))), Image.LANCZOS)
-    canvas.paste(card, ((cw - card.width) // 2, (ch - card.height) // 2))
+    # Contain: scale to fit within the frame (minus a small margin), keeping
+    # the whole card visible and as large as possible.
+    scale = min((cw - margin) / shot.width, (ch - margin) / shot.height)
+    w, h = max(1, int(shot.width * scale)), max(1, int(shot.height * scale))
+    card = shot.resize((w, h), Image.LANCZOS)
+    canvas.paste(card, ((cw - w) // 2, (ch - h) // 2))
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
