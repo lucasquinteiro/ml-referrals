@@ -583,15 +583,24 @@ def _capture_offer_image(
     """
     import auth
     import card as card_mod
+    from lib import mlgate
     from lib.log import log_step
     import screenshot as shot_mod
 
     shots = cfg.STATE_DIR / "shots"
     # Search by the product's keyword first — it was scraped from that search,
     # so it's near the top. Falls back to /ofertas (anonymous).
+    #
+    # But skip search when the scraping account is in a gate cooldown (its
+    # session got walled): waiting it out would block the whole post for up to
+    # the service timeout. Better to fall straight to /ofertas, then the product
+    # photo — a post never hangs on a dead burner session.
+    scraping_paused = mlgate.status(mlgate.SCRAPING)["cooldown_remaining_sec"] > 0
     attempts: list[tuple[str, str]] = []
-    if auth.has_session(auth.SCRAPING) and product.matched_keyword:
+    if auth.has_session(auth.SCRAPING) and product.matched_keyword and not scraping_paused:
         attempts.append(("search", product.matched_keyword))
+    elif scraping_paused:
+        log_step("scraping paused (session walled) — skipping the search card")
     attempts.append(("ofertas", ""))
 
     raw = None
