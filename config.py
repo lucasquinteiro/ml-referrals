@@ -34,6 +34,31 @@ TWITTER_UPDATES_ENV_FILE = AI_ROOT / "twitter-updates" / ".env"
 
 CONFIG_JSON = PROJECT_DIR / "config.json"
 
+# Runtime posting switch, set by `./run posting`. Lives in state/ (gitignored,
+# and excluded from deploy rsync) so it's machine-local — you can flip the
+# droplet on/off without a deploy, and a deploy never resets it.
+#   live      the scheduled post publishes to X (config post_target)
+#   simulate  it publishes to Slack only
+#   off       it does nothing
+POSTING_MODE_FILE = STATE_DIR / "posting_mode"
+POSTING_MODES = ("live", "simulate", "off")
+
+
+def get_posting_mode() -> str:
+    """Current scheduled-posting mode; defaults to 'live' when unset."""
+    try:
+        mode = POSTING_MODE_FILE.read_text(encoding="utf-8").strip().lower()
+        return mode if mode in POSTING_MODES else "live"
+    except FileNotFoundError:
+        return "live"
+    except Exception:  # noqa: BLE001 - any read problem falls back to live
+        return "live"
+
+
+def set_posting_mode(mode: str) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    POSTING_MODE_FILE.write_text(mode.strip().lower() + "\n", encoding="utf-8")
+
 _BOOTSTRAPPED = False
 
 

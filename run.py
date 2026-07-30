@@ -97,6 +97,13 @@ def _parse_args() -> argparse.Namespace:
     )
     nf.add_argument("unit", help="The failed unit name")
 
+    pmode = sub.add_parser(
+        "posting",
+        help="Show or set the scheduled posting mode (live | simulate | off)",
+    )
+    pmode.add_argument("mode", nargs="?", choices=list(cfg.POSTING_MODES), default=None,
+                       help="live = post to X; simulate = Slack only; off = nothing")
+
     def _freshness_flags(p: argparse.ArgumentParser) -> None:
         p.add_argument("--max-age-hours", type=float, default=None,
                        help="Refuse to run if the data is older than this "
@@ -113,6 +120,9 @@ def _parse_args() -> argparse.Namespace:
     )
     sim.add_argument("--queue", type=int, default=5,
                      help="How many upcoming offers to list after it (default 5)")
+    sim.add_argument("--no-links", action="store_true",
+                     help="Skip affiliate-link resolution (no browser); render "
+                          "the tweet with the plain product URL. Fast format preview.")
     _freshness_flags(sim)
 
     ofr = sub.add_parser(
@@ -712,10 +722,14 @@ def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
         log_stage(f"{len(deals)} offer(s) in the queue")
         _report_tier(deals, settings)
 
-        links = _resolve_links(deals[:1], settings, store, allow_untagged=True)
-        if links is None:
-            return 1
-        link = links[deals[0].product_id]
+        if args.no_links:
+            log_step("--no-links: using the plain product URL (no affiliate resolution)")
+            link = deals[0].url
+        else:
+            links = _resolve_links(deals[:1], settings, store, allow_untagged=True)
+            if links is None:
+                return 1
+            link = links[deals[0].product_id]
         text = _render(deals[0], link, settings, use_llm=args.llm)
         _show(deals[0], link, text, "WOULD POST NEXT", source=True)
 
@@ -1191,6 +1205,15 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
     from lib.log import log_err, log_ok, log_stage, log_step, log_warn
     from lib.twitter_post import TwitterPoster, TwitterPostError
 
+    # The runtime switch (./run posting). "off" disables scheduled posting
+    # entirely; a manual --dry-run still previews. This is checked before any
+    # Mercado Libre work so a paused pipeline is truly idle.
+    mode = cfg.get_posting_mode()
+    if mode == "off" and not args.dry_run:
+        log_warn("Scheduled posting is OFF — `./run posting live` (or simulate) "
+                 "to re-enable.")
+        return 0
+
     store = _get_store(settings)
     try:
         if args.ingest:
@@ -1212,7 +1235,8 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
             return 0
         _report_tier(deals, settings)
 
-        target = settings.get("post_target", "twitter_api")
+        # "simulate" forces Slack; "live" uses the configured target.
+        target = "slack" if mode == "simulate" else settings.get("post_target", "twitter_api")
         rc = _publish_one(deals[0], settings, store, target=target,
                           dry_run=args.dry_run, use_llm=args.llm)
         if rc == 0 and not args.dry_run:
@@ -1230,6 +1254,7 @@ def cmd_report(args: argparse.Namespace, settings: Any) -> int:
 
     store = _get_store(settings)
     try:
+        log_step(f"scheduled posting: {cfg.get_posting_mode().upper()}")
         log_stage("Mercado Libre sessions")
         for role in auth.ROLES:
             log_step(f"{role:10} {auth.describe_session(role)}")
@@ -1398,6 +1423,36 @@ def cmd_login(args: argparse.Namespace, settings: Any) -> int:
     return auth.login(settings.site, args.role, persist=args.persist)
 
 
+_MODE_MEANS = {
+    "live": "the scheduled post publishes to X"
+            + " (and mirrors to Slack)",
+    "simulate": "the scheduled post publishes to Slack only — a dry run on a timer",
+    "off": "the scheduled post does nothing (ingest and session-check keep running)",
+}
+
+
+def cmd_posting(args: argparse.Namespace, settings: Any) -> int:
+    """Show or set the scheduled posting mode — the runtime on/off switch."""
+    from lib.log import log_ok, log_stage, log_step
+
+    if not args.mode:
+        current = cfg.get_posting_mode()
+        log_stage(f"Scheduled posting mode: {current.upper()}")
+        log_step(_MODE_MEANS[current])
+        print()
+        log_step("change it with:  ./run posting <live|simulate|off>")
+        for m in cfg.POSTING_MODES:
+            mark = "→" if m == current else " "
+            log_step(f"  {mark} {m:9} {_MODE_MEANS[m]}")
+        return 0
+
+    cfg.set_posting_mode(args.mode)
+    log_ok(f"scheduled posting is now: {args.mode.upper()}")
+    log_step(_MODE_MEANS[args.mode])
+    log_step("Manual `./run promote --post` / `--simulate` still work regardless.")
+    return 0
+
+
 def cmd_notify_failure(args: argparse.Namespace, settings: Any) -> int:
     """Announce a failed systemd unit to Slack.
 
@@ -1458,6 +1513,7 @@ def main() -> int:
         "login": cmd_login,
         "session-check": cmd_session_check,
         "notify-failure": cmd_notify_failure,
+        "posting": cmd_posting,
         "ingest": cmd_ingest,
         "simulate": cmd_simulate,
         "offers": cmd_offers,

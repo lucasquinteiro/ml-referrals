@@ -38,6 +38,7 @@ echo "==> sessions + state (state/)"
 ssh "$TARGET" "mkdir -p $APP_DIR/state"
 rsync -av --delete-after \
   --exclude 'mlgate/' \
+  --exclude 'posting_mode' \
   state/ "$TARGET:$APP_DIR/state/"
 
 echo "==> fixing ownership on the droplet"

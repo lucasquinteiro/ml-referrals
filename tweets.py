@@ -23,9 +23,9 @@ LINK_WEIGHT = 23  # X's t.co length, counted for any URL
 # Shark Deals branding: a 🦈 leads every template (varied so the timeline isn't
 # monotonous), and an optional signature line closes it (config tweet_signature).
 _TEMPLATES = [
-    "🦈 {discount}% OFF en {label}\n\n{title}\n\n❌ Antes {was}\n💰 Ahorrás {saved}\n\n✅ AHORA {now}\n\n{link}",
-    "🦈⚡ ¡BAJÓ {discount}%!\n\n{title}\n\n🏷️ Antes {was}\n🤑 Te ahorrás {saved}\n\n💸 AHORA {now}\n\n{link}",
-    "🦈 Alerta de precio · {label}\n\n{title}\n\n📉 {discount}% OFF — antes {was}\n💵 {saved} menos\n\n✅ AHORA {now}\n\n{link}",
+    "🦈 {discount}% OFF en {label} 🔥\n\n{title}\n\n❌ Antes {was}\n💰 Ahorrás {saved}\n\n✅ AHORA {now}\n\n{link}",
+    "🦈⚡ ¡BAJÓ {discount}%! 🔥\n\n{title}\n\n🏷️ Antes {was}\n🤑 Te ahorrás {saved}\n\n💸 AHORA {now}\n\n{link}",
+    "🦈 Alerta de precio · {label} 🔥\n\n{title}\n\n📉 {discount}% OFF — antes {was}\n💵 {saved} menos\n\n✅ AHORA {now}\n\n{link}",
     "🦈🔥 {title}\n\n🏷️ Antes {was} · {discount}% OFF\n💰 Ahorro: {saved}\n\n✅ AHORA {now}\n\n{link}",
 ]
 
