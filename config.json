@@ -104,7 +104,7 @@
   "mirror_to_slack": true,
   "tweet_language": "es-AR",
   "tweet_signature": "",
-  "tweet_image_mode": "card",
+  "tweet_image_mode": "screenshot",
   "tweet_hashtags": [],
   "tweet_disclosure": "",
   "store": "supabase",

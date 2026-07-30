@@ -100,46 +100,42 @@ def capture_product_page(
     """Screenshot the product's *desktop* detail page — one page load.
 
     This is the desktop layout (gallery, title, price, buy box), not the compact
-    listing card. Product pages are behind the login wall, so it uses the
-    scraping session; the run's nav/identity chrome is hidden first so nothing
-    personal is captured. One gated request, versus scanning a dozen listing
-    pages for a card — which is both faster and what fixes the post timeouts.
-    """
-    from playwright.sync_api import sync_playwright
+    listing card. Product pages sit behind the login wall, so it uses the
+    affiliate session — deliberately, not the burner: at post time this is a
+    single, human-paced load (~8/day), gated through mlgate's affiliate budget,
+    which is the gentle usage a real account survives. The nav/identity chrome
+    is hidden first so nothing personal is captured.
 
+    Note: driving PDPs *repeatedly* has walled the affiliate account fast in the
+    past, so keep this to one shot per post and prefer a persistent profile.
+    """
     import auth
     from lib import mlgate
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not auth.has_session(auth.SCRAPING):
-        log_warn("screenshot: product pages need `./run login --role scraping`")
+    role = auth.AFFILIATE
+    if not auth.has_session(role):
+        log_warn("screenshot: product pages need `./run login --role affiliate`")
         return None
 
-    state = auth.storage_state_path(auth.SCRAPING)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
-        try:
-            ctx = browser.new_context(
-                locale="es-AR",
-                user_agent=UA,
-                # A wide desktop viewport so ML serves the desktop layout, not
-                # the narrow/mobile breakpoint.
-                viewport={"width": 1440, "height": 1600},
-                device_scale_factor=2,
-                storage_state=str(state) if state else None,
-            )
+    # BrowserSession picks the persistent profile over a frozen snapshot when one
+    # exists — preferred here, since a live profile keeps ML's rotating tokens
+    # fresh and PDPs are wall-prone.
+    try:
+        with auth.BrowserSession(
+            role, headless=True, user_agent=UA,
+            viewport={"width": 1440, "height": 1600}, device_scale_factor=2,
+        ) as ctx:
             page = ctx.new_page()
-            mlgate.wait(mlgate.SCRAPING, label="pdp screenshot")
+            mlgate.wait(mlgate.AFFILIATE, label="pdp screenshot")
             page.goto(product.url, wait_until="domcontentloaded", timeout=timeout_ms)
             if any(m in page.url for m in _WALL_MARKERS):
-                mlgate.trip(mlgate.SCRAPING, "pdp wall")
-                log_warn("screenshot: product page hit the login wall — session "
-                         "expired; re-run `./run login --role scraping`")
+                mlgate.trip(mlgate.AFFILIATE, "pdp wall")
+                log_warn("screenshot: product page hit the login wall — the "
+                         "affiliate session expired; re-run "
+                         "`./run login --role affiliate`")
                 return None
             page.wait_for_timeout(2500)
             page.add_style_tag(content=_PDP_HIDE_CSS)
@@ -175,8 +171,9 @@ def capture_product_page(
             page.screenshot(path=str(out_path), clip=clip)
             log_step("captured desktop product page")
             return out_path
-        finally:
-            browser.close()
+    except Exception as e:  # noqa: BLE001 - never let a capture crash a post
+        log_warn(f"pdp screenshot failed ({type(e).__name__}: {e})")
+        return None
 
 
 def capture_offer_card(

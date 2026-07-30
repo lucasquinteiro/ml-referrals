@@ -666,44 +666,74 @@ def _render_card_image(product: Any, settings: Any, store: Any = None):
     return ref
 
 
+def _capture_pdp_image(product: Any, settings: Any, store: Any = None):
+    """Screenshot the product's ML detail page (the desktop hero) at post time.
+
+    This is the authentic-looking capture the deal accounts use — ML's real
+    price block, cuotas and "medios de pago", not a reconstruction. It uses the
+    affiliate session for a single, human-paced load per post (~8/day), gated
+    through mlgate's affiliate budget. Returns a cached ref, or None so the
+    caller falls back to the bare product photo (never the synthetic card).
+    """
+    import screenshot as shot_mod
+    from lib.log import log_err, log_step
+
+    out = cfg.STATE_DIR / "shots" / f"{product.product_id}-pdp.png"
+    shot = shot_mod.capture_product_page(product, out, site=settings.site)
+    if not shot:
+        return None
+    if store is None:
+        return str(shot)
+
+    try:
+        url = store.upload_image(product.product_id, shot)
+    except RuntimeError as e:
+        log_err(str(e))
+        return None
+    ref = url or str(shot)
+    store.save_offer_image(product_id=product.product_id, url=ref, local_path=str(shot))
+    log_step("cached product-page screenshot")
+    return ref
+
+
 def _resolve_image(product: Any, settings: Any, store: Any = None):
     """Pick the picture for a tweet. Returns (image_url, local_path).
 
-    "card"       composes an ML-style card from data alone (card_html) — no ML
-                 request at all. The default, and what retires the screenshot
-                 path's dependence on the burner session.
-    "screenshot" captures Mercado Libre's own live offer card. Recognisable, but
-                 the search source sits behind the login wall, so it needs the
-                 scraping session and can hit the visual-verification wall.
+    "screenshot" captures ML's real product page (the desktop hero) with the
+                 affiliate session — one gentle load per post. The default: it's
+                 the authentic look, ML's own price block and cuotas.
+    "card"       composes an ML-style card from data alone (card_html) — never
+                 walls, but not pixel-identical to ML, so off by default.
     "product"    the bare product photo.
-    All modes degrade to the product photo when their image can't be produced.
+    Every mode degrades to the bare product photo when its image can't be
+    produced — a screenshot that walls never posts the synthetic card.
     """
     from lib.log import log_step
 
-    mode = settings.get("tweet_image_mode", "card")
+    mode = settings.get("tweet_image_mode", "screenshot")
     if mode == "none":
         return None, None
 
     def _as_pair(ref: str):
         return (ref, None) if ref.startswith("http") else (None, ref)
 
-    # A previously-cached card always wins — no ML request, no re-render.
+    # A previously-cached image always wins — no ML request, no re-render.
     if store is not None:
         stored = store.get_offer_images([product.product_id]).get(product.product_id)
         if stored and (stored.startswith("http") or Path(stored).is_file()):
-            log_step("using the stored offer-card image")
+            log_step("using the stored offer image")
             return _as_pair(stored)
 
-    if mode == "card":
+    if mode == "screenshot":
+        ref = _capture_pdp_image(product, settings, store)
+        if ref:
+            return _as_pair(ref)
+        log_step("no product-page screenshot — using the product photo")
+    elif mode == "card":
         ref = _render_card_image(product, settings, store)
         if ref:
             return _as_pair(ref)
         log_step("card render unavailable — using the product photo")
-    elif mode == "screenshot" and store is not None:
-        ref = _capture_offer_image(product, settings, store)
-        if ref:
-            return _as_pair(ref)
-        log_step("no offer card available — using the product photo")
 
     return (product.image or None), None
 
