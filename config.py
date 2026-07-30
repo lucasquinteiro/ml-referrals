@@ -187,13 +187,16 @@ _DEFAULTS: dict[str, Any] = {
     # running log of what actually went out.
     "mirror_to_slack": True,
     # What picture to attach:
+    #   "card"       an ML-style offer card composed from data (card_html +
+    #                templates/offer_card.html) — no ML request, no session, no
+    #                login wall. The recommended default.
     #   "product"    the product photo, uploaded natively (no browser)
-    #   "screenshot" MercadoLibre's own compact offer card (photo, title,
-    #                discount, price) — found by searching the product's keyword,
-    #                on a clean white canvas (no blurred backdrop)
+    #   "screenshot" MercadoLibre's own compact offer card, captured live —
+    #                the search source needs the burner session and can hit the
+    #                visual-verification wall (this is what "card" replaces)
     #   "none"       text only
-    # Any failure falls back down this list rather than losing the tweet.
-    "tweet_image_mode": "product",
+    # Any failure falls back to the product photo rather than losing the tweet.
+    "tweet_image_mode": "card",
     # Appended to every tweet (kept short — links eat 23 chars).
     "tweet_hashtags": ["#Ofertas"],
     # Affiliate-disclosure suffix. Required by most jurisdictions and by X's

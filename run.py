@@ -631,31 +631,75 @@ def _capture_offer_image(
     return ref
 
 
+def _render_card_image(product: Any, settings: Any, store: Any = None):
+    """Compose an ML-style offer card from data alone; cache it. Returns a ref.
+
+    Unlike _capture_offer_image, this touches no Mercado Libre page: card_html
+    fills templates/offer_card.html with the product data we already hold plus
+    the product photo, then screenshots it headless. No session, no login wall,
+    no rate gate — so it can't time a post out on a walled burner. Returns the
+    stored ref (URL or local path), or None so the caller falls back to the
+    bare product photo.
+    """
+    import card_html
+    from lib.log import log_err, log_step, log_warn
+
+    out = cfg.STATE_DIR / "shots" / f"{product.product_id}-card.png"
+    try:
+        card_html.render(product, out, brand=settings.get("tweet_signature", "") or "")
+    except Exception as e:  # noqa: BLE001 - any render failure degrades gracefully
+        log_warn(f"card render failed ({type(e).__name__}: {e}); using product photo")
+        return None
+
+    if store is None:
+        log_step("rendered offer card from data")
+        return str(out)
+
+    try:
+        url = store.upload_image(product.product_id, out)
+    except RuntimeError as e:
+        log_err(str(e))
+        return None
+    ref = url or str(out)
+    store.save_offer_image(product_id=product.product_id, url=ref, local_path=str(out))
+    log_step("rendered and cached offer card from data")
+    return ref
+
+
 def _resolve_image(product: Any, settings: Any, store: Any = None):
     """Pick the picture for a tweet. Returns (image_url, local_path).
 
-    "screenshot" mode uses Mercado Libre's own offer card — the look people
-    recognise. It's captured lazily for just this one product and cached, so a
-    post costs at most one gated screenshot. Degrades to the product photo when
-    the offer can't be found (rotated off, or no session for search).
+    "card"       composes an ML-style card from data alone (card_html) — no ML
+                 request at all. The default, and what retires the screenshot
+                 path's dependence on the burner session.
+    "screenshot" captures Mercado Libre's own live offer card. Recognisable, but
+                 the search source sits behind the login wall, so it needs the
+                 scraping session and can hit the visual-verification wall.
+    "product"    the bare product photo.
+    All modes degrade to the product photo when their image can't be produced.
     """
     from lib.log import log_step
 
-    mode = settings.get("tweet_image_mode", "product")
+    mode = settings.get("tweet_image_mode", "card")
     if mode == "none":
         return None, None
 
     def _as_pair(ref: str):
         return (ref, None) if ref.startswith("http") else (None, ref)
 
-    # A previously-cached card always wins — no ML request at all.
+    # A previously-cached card always wins — no ML request, no re-render.
     if store is not None:
         stored = store.get_offer_images([product.product_id]).get(product.product_id)
         if stored and (stored.startswith("http") or Path(stored).is_file()):
             log_step("using the stored offer-card image")
             return _as_pair(stored)
 
-    if mode == "screenshot" and store is not None:
+    if mode == "card":
+        ref = _render_card_image(product, settings, store)
+        if ref:
+            return _as_pair(ref)
+        log_step("card render unavailable — using the product photo")
+    elif mode == "screenshot" and store is not None:
         ref = _capture_offer_image(product, settings, store)
         if ref:
             return _as_pair(ref)
