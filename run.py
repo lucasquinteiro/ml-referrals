@@ -161,6 +161,25 @@ def _parse_args() -> argparse.Namespace:
                      help="List what would be minted without creating anything")
     _freshness_flags(lnk)
 
+    prom = sub.add_parser(
+        "promote",
+        help="Manually promote one offer — --simulate to Slack, --post to X",
+    )
+    prom.add_argument("keyword", nargs="?", default=None,
+                      help="Fetch a fresh offer for this keyword (live search). "
+                           "Omit to use the best offer already in the queue.")
+    mode = prom.add_mutually_exclusive_group()
+    mode.add_argument("--simulate", action="store_true",
+                      help="Send to Slack (the default)")
+    mode.add_argument("--post", action="store_true", help="Publish to X for real")
+    prom.add_argument("--dry-run", action="store_true",
+                      help="Render only; send nothing")
+    prom.add_argument("--pages", type=int, default=2,
+                      help="Search pages to scan when a keyword is given (default 2)")
+    prom.add_argument("--min-discount", type=int, default=None, metavar="PCT",
+                      help="Minimum discount to accept (overrides config)")
+    _freshness_flags(prom)
+
     db = sub.add_parser("db", help="Run a read-only SQL query against the store")
     db.add_argument("sql", nargs="?", default=None,
                     help="SQL to run (omit to list the built-in named queries)")
@@ -983,6 +1002,158 @@ def cmd_db(args: argparse.Namespace, settings: Any) -> int:
     return 0
 
 
+def _publish_one(
+    product: Any, settings: Any, store: Any, *,
+    target: str, dry_run: bool = False, use_llm: bool = False,
+) -> int:
+    """Publish one product to `target` (twitter_api / twitter_cookie / slack).
+
+    The shared path behind `post` and `promote`: resolve the affiliate link,
+    render the tweet, capture the image, send, and record. Returns 0 on success
+    or a clean skip, 1 on error.
+    """
+    from lib.log import log_err, log_ok, log_step, log_warn
+    from lib.twitter_post import TwitterPoster, TwitterPostError
+
+    # Targeting the API without keys: skip cleanly *before* spending any
+    # Mercado Libre requests, so scheduled runs don't alert during setup.
+    if target in ("twitter_api", "twitter") and not dry_run:
+        from lib.twitter_api import have_credentials
+        if not have_credentials():
+            log_warn("post_target is 'twitter_api' but the API keys aren't set "
+                     "(TWITTER_API_KEY/SECRET, TWITTER_ACCESS_TOKEN/SECRET).\n"
+                     "  Skipping — add them to .env to go live.")
+            return 0
+
+    links = _resolve_links([product], settings, store, allow_untagged=dry_run)
+    if links is None:
+        return 1
+    link = links[product.product_id]
+    text = _render(product, link, settings, use_llm=use_llm)
+    _show(product, link, text, "DRY RUN" if dry_run else f"POSTING → {target.upper()}")
+
+    print()
+    image_url, image_path = _resolve_image(product, settings, store)
+
+    if target == "slack":
+        tweet_id = None
+        if not dry_run:
+            import notifier
+            # Slack renders only a public URL; a local path can't be shown, so
+            # fall back to the product photo for the preview.
+            preview = image_url or (product.image if image_path else None)
+            try:
+                sent = notifier.post_tweet_to_slack(text, image_url=preview)
+            except Exception as e:  # noqa: BLE001
+                log_err(f"slack post failed: {e}")
+                return 1
+            if not sent:
+                log_err("target is 'slack' but SLACK_WEBHOOK_URL isn't set.")
+                return 1
+            tweet_id = "slack"
+
+    elif target in ("twitter_api", "twitter"):
+        from lib.twitter_api import (
+            MissingCredentials, TwitterAPIError, TwitterAPIPoster,
+        )
+        try:
+            tweet_id = TwitterAPIPoster(dry_run=dry_run).post(
+                text, image_url=image_url, image_path=image_path)
+        except MissingCredentials as e:
+            log_warn(f"{e}\n  Skipping until the API keys are set.")
+            return 0
+        except TwitterAPIError as e:
+            log_err(f"post failed: {e}")
+            return 1
+
+    elif target == "twitter_cookie":
+        try:
+            tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR, dry_run=dry_run).post(
+                text, image_url=image_url, image_path=image_path)
+        except TwitterPostError as e:
+            log_err(f"post failed: {e}")
+            return 1
+    else:
+        log_err(f"unknown target '{target}' — use twitter_api, twitter_cookie, or slack")
+        return 1
+
+    store.record_post(
+        product_id=product.product_id, tweet_id=tweet_id, tweet_text=text,
+        affiliate_url=link, price=product.price,
+        discount_pct=product.discount_pct, dry_run=dry_run,
+    )
+    if dry_run:
+        log_ok("dry run — nothing published")
+    elif target == "slack":
+        log_ok("posted to Slack (simulator)")
+    elif tweet_id:
+        log_ok(f"posted https://x.com/i/status/{tweet_id}")
+    return 0
+
+
+def cmd_promote(args: argparse.Namespace, settings: Any) -> int:
+    """Manually promote one offer — optionally for a specific keyword.
+
+    Two modes: --simulate (default) posts to Slack, --post publishes to X. With
+    a keyword, it live-scrapes that term (search) so the offer is genuinely
+    fresh, then applies the usual thresholds; without one, it takes the best
+    fresh offer already in the queue.
+    """
+    from lib.log import log_err, log_ok, log_stage, log_step, log_warn
+    import offers as off
+
+    target = "twitter_api" if args.post else "slack"
+    store = _get_store(settings)
+    try:
+        if args.keyword:
+            import auth
+            from scraper import MercadoLibreScraper
+
+            if not auth.has_session(auth.SCRAPING):
+                log_err("A keyword promote live-scrapes search, which needs "
+                        "`./run login --role scraping`.")
+                return 1
+            log_stage(f"Fetching a fresh offer for '{args.keyword}'")
+            with MercadoLibreScraper(
+                settings.site, headless=True,
+                delay_sec=settings.delay_between_pages_sec,
+            ) as scraper:
+                products = scraper.scrape_search([args.keyword], pages=args.pages)
+            if not products:
+                log_warn("Nothing came back for that keyword.")
+                return 0
+            # Tag against the keyword and snapshot, so it lands in the store /
+            # price history like any other offer.
+            kw = [off.Keyword(term=args.keyword, label=args.keyword.title())]
+            matched = off.match_products(products, kw, settings)
+            run_id = store.start_run("promote", note=args.keyword)
+            store.record_snapshots(matched or products, run_id)
+            cooldown = store.recently_posted(settings.repost_cooldown_days)
+            deals = off.filter_offers(
+                matched, settings, exclude_ids=cooldown,
+                min_discount_override=args.min_discount,
+            )
+        else:
+            log_stage("Checking the scraped data")
+            bail = _require_fresh_data(store, settings, args)
+            if bail is not None:
+                return bail
+            deals = _select_deals(store, settings)
+            if args.min_discount is not None:
+                deals = [p for p in deals if (p.discount_pct or 0) >= args.min_discount]
+
+        log_stage(f"{len(deals)} matching offer(s)")
+        if not deals:
+            log_warn("No fresh offer cleared the thresholds. Try --min-discount "
+                     "lower, or a different keyword.")
+            return 0
+
+        return _publish_one(deals[0], settings, store, target=target,
+                            dry_run=args.dry_run, use_llm=args.llm)
+    finally:
+        store.close()
+
+
 def cmd_post(args: argparse.Namespace, settings: Any) -> int:
     """Publish exactly one tweet: the best offer currently in the queue.
 
@@ -1015,95 +1186,11 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
         _report_tier(deals, settings)
 
         target = settings.get("post_target", "twitter_api")
-
-        # If we're targeting the API but the keys aren't in place yet, skip
-        # *before* spending any Mercado Libre requests on link/image work — and
-        # cleanly (exit 0), so scheduled runs don't fire failure alerts while
-        # you're still setting up the developer app.
-        if target in ("twitter_api", "twitter") and not args.dry_run:
-            from lib.twitter_api import have_credentials
-            if not have_credentials():
-                log_warn("post_target is 'twitter_api' but the API keys aren't set "
-                         "(TWITTER_API_KEY/SECRET, TWITTER_ACCESS_TOKEN/SECRET).\n"
-                         "  Skipping — add them to .env to go live.")
-                return 0
-
-        product = deals[0]
-        links = _resolve_links([product], settings, store,
-                               allow_untagged=args.dry_run)
-        if links is None:
-            return 1
-        link = links[product.product_id]
-        text = _render(product, link, settings, use_llm=args.llm)
-        header = "DRY RUN" if args.dry_run else f"POSTING → {target.upper()}"
-        _show(product, link, text, header)
-
-        print()
-        image_url, image_path = _resolve_image(product, settings, store)
-
-        if target == "slack":
-            # Simulator: publish to a Slack channel instead of X, so the copy
-            # and cadence can be watched for a few days before going live.
-            tweet_id = None
-            if not args.dry_run:
-                import notifier
-                # Slack can only render a public URL; a local path can't be
-                # shown, so fall back to the product photo for the preview.
-                preview = image_url or (product.image if image_path else None)
-                try:
-                    sent = notifier.post_tweet_to_slack(text, image_url=preview)
-                except Exception as e:  # noqa: BLE001
-                    log_err(f"slack post failed: {e}")
-                    return 1
-                if not sent:
-                    log_err("post_target is 'slack' but SLACK_WEBHOOK_URL isn't set.")
-                    return 1
-                tweet_id = "slack"
-
-        elif target in ("twitter_api", "twitter"):
-            # Official X API (v2 tweet + v1.1 media). "twitter" kept as an alias.
-            from lib.twitter_api import (
-                MissingCredentials, TwitterAPIError, TwitterAPIPoster,
-            )
-            try:
-                tweet_id = TwitterAPIPoster(dry_run=args.dry_run).post(
-                    text, image_url=image_url, image_path=image_path)
-            except MissingCredentials as e:
-                # Not a failure — the keys just aren't in place yet. Skip
-                # cleanly so scheduled runs don't spam failure alerts.
-                log_warn(f"{e}\n  Skipping until the API keys are set.")
-                return 0
-            except TwitterAPIError as e:
-                log_err(f"post failed: {e}")
-                return 1
-
-        elif target == "twitter_cookie":
-            try:
-                tweet_id = TwitterPoster(cache_dir=cfg.STATE_DIR,
-                                         dry_run=args.dry_run).post(
-                    text, image_url=image_url, image_path=image_path)
-            except TwitterPostError as e:
-                log_err(f"post failed: {e}")
-                return 1
-        else:
-            log_err(f"unknown post_target '{target}' — use twitter_api, "
-                    "twitter_cookie, or slack")
-            return 1
-
-        store.record_post(
-            product_id=product.product_id, tweet_id=tweet_id, tweet_text=text,
-            affiliate_url=link, price=product.price,
-            discount_pct=product.discount_pct, dry_run=args.dry_run,
-        )
-        if args.dry_run:
-            log_ok("dry run — nothing published")
-        elif target == "slack":
-            log_ok("posted to Slack (simulator)")
+        rc = _publish_one(deals[0], settings, store, target=target,
+                          dry_run=args.dry_run, use_llm=args.llm)
+        if rc == 0 and not args.dry_run:
             log_step(f"{len(deals) - 1} offer(s) still queued for the next run")
-        elif tweet_id:
-            log_ok(f"posted https://x.com/i/status/{tweet_id}")
-            log_step(f"{len(deals) - 1} offer(s) still queued for the next run")
-        return 0
+        return rc
     finally:
         store.close()
 
@@ -1352,6 +1439,7 @@ def main() -> int:
         "links": cmd_links,
         "db": cmd_db,
         "post": cmd_post,
+        "promote": cmd_promote,
         "report": cmd_report,
         "set-affiliate": cmd_set_affiliate,
         "affiliate-tags": cmd_affiliate_tags,

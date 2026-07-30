@@ -102,6 +102,7 @@
   "use_llm_for_copy": true,
   "post_target": "twitter_api",
   "tweet_language": "es-AR",
+  "tweet_signature": "",
   "tweet_image_mode": "screenshot",
   "tweet_hashtags": [],
   "tweet_disclosure": "",

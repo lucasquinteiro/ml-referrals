@@ -150,6 +150,9 @@ _DEFAULTS: dict[str, Any] = {
     # is configured or the call fails.
     "use_llm_for_copy": True,
     "tweet_language": "es-AR",
+    # Optional signature line appended to every tweet (brand sign-off). The 🦈
+    # already leads each template, so this defaults off; set e.g. "🦈 Shark Deals".
+    "tweet_signature": "",
     # Where `post` publishes:
     #   "twitter_api"     the official X API (developer app keys; recommended)
     #   "twitter_cookie"  the old cookie/session poster (no API needed)
