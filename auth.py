@@ -409,6 +409,21 @@ def login(site: str, role: str = SCRAPING, *, persist: bool = False) -> int:
             ctx.close()
             return 130
 
+        # The decisive check: are the logged-in cookies actually present? An
+        # anonymous session still carries _bmc/_csrf/ftid, so their presence
+        # proves nothing — only ssid/orguserid/orgnickp mean a real login. This
+        # is what stops us silently saving a not-logged-in session (which then
+        # walls on every request and shows "account: ?").
+        auth_cookies = {"ssid", "orguserid", "orguseridp", "orgnickp", "nsa_rotok"}
+        present = {c["name"] for c in ctx.cookies()} & auth_cookies
+        if not present:
+            log_err("You don't appear to be logged in — none of the account "
+                    "cookies were set. Finish the login in the browser (you "
+                    "should see your account, not the 'ingresá tu e-mail' "
+                    "screen) and run it again. Nothing was saved.")
+            ctx.close()
+            return 1
+
         try:
             ok, detail = (
                 _verify_affiliate(page, site) if role == AFFILIATE
