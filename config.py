@@ -184,6 +184,9 @@ _DEFAULTS: dict[str, Any] = {
     # is configured or the call fails.
     "use_llm_for_copy": True,
     "tweet_language": "es-AR",
+    # Where the affiliate link sits in the tweet: "bottom" (default — lead with
+    # the hook, link as the closing CTA next to the screenshot) or "top".
+    "link_position": "bottom",
     # Optional signature line appended to every tweet (brand sign-off). The 🦈
     # already leads each template, so this defaults off; set e.g. "🦈 Shark Deals".
     "tweet_signature": "",

@@ -20,14 +20,16 @@ from scraper import Product
 TWEET_LIMIT = 280
 LINK_WEIGHT = 23  # X's t.co length, counted for any URL
 
-# Shark Deals branding: a 🦈 leads every template (varied so the timeline isn't
-# monotonous), and an optional signature line closes it (config tweet_signature).
-_TEMPLATES = [
-    "🦈 {discount}% OFF en {label} 🔥\n\n{title}\n\n❌ Antes {was}\n💰 Ahorrás {saved}\n\n✅ AHORA {now}\n\n{link}",
-    "🦈⚡ ¡BAJÓ {discount}%! 🔥\n\n{title}\n\n🏷️ Antes {was}\n🤑 Te ahorrás {saved}\n\n💸 AHORA {now}\n\n{link}",
-    "🦈 Alerta de precio · {label} 🔥\n\n{title}\n\n📉 {discount}% OFF — antes {was}\n💵 {saved} menos\n\n✅ AHORA {now}\n\n{link}",
-    "🦈🔥 {title}\n\n🏷️ Antes {was} · {discount}% OFF\n💰 Ahorro: {saved}\n\n✅ AHORA {now}\n\n{link}",
-]
+# The house format (Shark Deals):
+#
+#   ¡Bajó 60%! 🔥 AHORA $799.999 🤑🤑🤑
+#
+#   Tv Philco 58 Pulgadas Android Tv 4k 220V · antes $1.999.999 🦈🦈🦈
+#
+#   <link>
+#
+# The link goes top or bottom per settings.link_position (default "bottom" —
+# lead with the hook, link as the closing CTA next to the screenshot).
 
 _SYSTEM = (
     "Sos un curador de ofertas argentino que publica en X/Twitter. Escribís "
@@ -68,14 +70,21 @@ def _tail(settings: Any) -> str:
     return "\n\n" + " · ".join(bits) if bits else ""
 
 
-def _assemble(body: str, link: str, tail: str) -> str:
+def _place_link(body: str, link: str, tail: str, position: str) -> str:
+    """Put the link above or below the body; tail (disclosure) always last."""
+    if position == "top":
+        return f"{link}\n\n{body}{tail}"
+    return f"{body}\n\n{link}{tail}"
+
+
+def _assemble(body: str, link: str, tail: str, position: str = "bottom") -> str:
     """Fit body + link + tail into 280, trimming the body if needed."""
-    overhead = LINK_WEIGHT + len(tail) + 1  # +1 for the newline before the link
+    overhead = LINK_WEIGHT + len(tail) + 2  # the blank line between body and link
     room = TWEET_LIMIT - overhead
     body = body.strip()
     if len(body) > room:
         body = _shorten_title(body, room)
-    return f"{body}\n{link}{tail}"
+    return _place_link(body, link, tail, position)
 
 
 def tweet_length(text: str, link: str) -> int:
@@ -83,29 +92,38 @@ def tweet_length(text: str, link: str) -> int:
     return len(text) - len(link) + LINK_WEIGHT if link in text else len(text)
 
 
+def _link_position(settings: Any) -> str:
+    pos = (settings.get("link_position") or "bottom").strip().lower()
+    return "top" if pos == "top" else "bottom"
+
+
 def render_template(product: Product, link: str, settings: Any) -> str:
+    """The house format:
+
+        ¡Bajó 60%! 🔥 AHORA $799.999 🤑🤑🤑
+
+        <title> · antes $1.999.999 🦈🦈🦈
+
+        <link>
+    """
     tail = _tail(settings)
-    # Template picked from the product id, not at random: the same product always
-    # renders the same tweet, so runs are reproducible and reviewable — while
-    # different products still vary the format across the timeline.
-    idx = int(hashlib.md5(product.product_id.encode()).hexdigest(), 16) % len(_TEMPLATES)
-    template = _TEMPLATES[idx]
-    fields = {
-        "discount": product.discount_pct or 0,
-        "was": _fmt_price(product.original_price, product.currency),
-        "now": _fmt_price(product.price, product.currency),
-        "saved": _fmt_price(product.savings, product.currency),
-        "label": product.matched_label or "Oferta",
-    }
+    position = _link_position(settings)
+    now = _fmt_price(product.price, product.currency)
+    disc = product.discount_pct or 0
 
-    # Budget the title against the scaffold, so the finished tweet fits.
-    scaffold = template.format(title="", link="", **fields)
-    room = TWEET_LIMIT - len(scaffold) - LINK_WEIGHT - len(tail)
+    if disc and product.original_price:
+        line1 = f"¡Bajó {disc}%! 🔥 AHORA {now} 🤑🤑🤑"
+        suffix = f" · antes {_fmt_price(product.original_price, product.currency)} 🦈🦈🦈"
+    else:
+        # No reliable discount/before-price: still lead with the price.
+        line1 = f"🦈🔥 AHORA {now} 🤑🤑🤑"
+        suffix = " 🦈🦈🦈"
 
-    text = template.format(
-        title=_shorten_title(product.title, max(20, room)), link=link, **fields
-    )
-    return text + tail
+    # Budget the title against everything else so the tweet fits in 280.
+    fixed = len(line1) + 2 + len(suffix) + 2 + LINK_WEIGHT + len(tail)
+    room = max(20, TWEET_LIMIT - fixed)
+    body = f"{line1}\n\n{_shorten_title(product.title, room)}{suffix}"
+    return _place_link(body, link, tail, position)
 
 
 def generate_with_llm(product: Product, link: str, settings: Any) -> Optional[str]:
@@ -159,7 +177,7 @@ def generate_with_llm(product: Product, link: str, settings: Any) -> Optional[st
     text = text.strip().strip('"').strip()
     if not text:
         return None
-    return _assemble(text, link, tail)
+    return _assemble(text, link, tail, _link_position(settings))
 
 
 def build_tweet(product: Product, link: str, settings: Any, *, deterministic: bool = False) -> str:
