@@ -182,7 +182,7 @@ _DEFAULTS: dict[str, Any] = {
     # as spam, and one at a time keeps every publish reviewable.
     # Prefer the LLM for tweet copy; falls back to templates when no API key
     # is configured or the call fails.
-    "use_llm_for_copy": True,
+    "use_llm_for_copy": False,
     "tweet_language": "es-AR",
     # Where the affiliate link sits in the tweet: "bottom" (default — lead with
     # the hook, link as the closing CTA next to the screenshot) or "top".
