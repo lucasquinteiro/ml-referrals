@@ -67,6 +67,10 @@ def _parse_args() -> argparse.Namespace:
                      help="Snapshot every scraped product, not just keyword matches")
     ing.add_argument("--source", choices=["ofertas", "search"], default="ofertas",
                      help="ofertas (default, no login) or search (needs ./run login)")
+    ing.add_argument("--category", action="append", default=None, metavar="MLA_ID",
+                     help="Crawl only this /ofertas category (repeatable), e.g. "
+                          "--category MLA1051. Overrides config.categories. Handy "
+                          "for testing a single category from the console.")
     ing.add_argument("--no-slack", action="store_true",
                      help="Skip the Slack summary even if SLACK_WEBHOOK_URL is set")
     ing.add_argument("--start-page", type=int, default=1, metavar="N",
@@ -123,6 +127,11 @@ def _parse_args() -> argparse.Namespace:
     sim.add_argument("--no-links", action="store_true",
                      help="Skip affiliate-link resolution (no browser); render "
                           "the tweet with the plain product URL. Fast format preview.")
+    sim.add_argument("--image", action="store_true",
+                     help="Also produce the post image the way `post` would "
+                          "(screenshot mode captures the ML product page via the "
+                          "affiliate session) and report where it saved. Writes "
+                          "nothing to the store.")
     _freshness_flags(sim)
 
     ofr = sub.add_parser(
@@ -241,11 +250,27 @@ def _get_store(settings: Any):
     return Store(cfg.DB_PATH)
 
 
+def _norm_categories(categories) -> list[dict]:
+    """Normalise a categories config/CLI value into [{"id","label"}, ...]."""
+    out = []
+    for c in categories or []:
+        if isinstance(c, dict) and c.get("id"):
+            out.append({"id": c["id"], "label": c.get("label") or c["id"]})
+        elif isinstance(c, str) and c.strip():
+            out.append({"id": c.strip(), "label": c.strip()})
+    return out
+
+
 def _scrape_and_match(
     settings: Any, *, pages: int, headed: bool, keyword_overrides=None,
-    source: str = "ofertas", start_page: int = 1,
+    source: str = "ofertas", start_page: int = 1, categories=None,
 ):
-    """Shared by `ingest` and `post --ingest`. Returns (all_products, matched)."""
+    """Shared by `ingest` and `post --ingest`. Returns (all_products, matched).
+
+    When `categories` is given (and source is the default /ofertas HTTP path),
+    each category's offers are crawled in turn and merged, rather than the
+    general /ofertas page — a server-side filter for better category coverage.
+    """
     import auth
     from lib.log import log_ok, log_stage, log_step
     import offers as off
@@ -288,10 +313,26 @@ def _scrape_and_match(
         # it lets the CI job skip installing Chromium entirely.
         from scraper import scrape_offers_http
 
-        products = scrape_offers_http(
-            settings.site, pages=pages, start_page=start_page,
-            delay_sec=settings.delay_between_pages_sec,
-        )
+        cats = _norm_categories(categories)
+        if cats:
+            log_step(f"crawling {len(cats)} categor"
+                     f"{'y' if len(cats) == 1 else 'ies'}: "
+                     + ", ".join(c["label"] for c in cats))
+            seen: dict[str, Any] = {}
+            for c in cats:
+                batch = scrape_offers_http(
+                    settings.site, pages=pages, start_page=start_page,
+                    delay_sec=settings.delay_between_pages_sec, category=c["id"],
+                )
+                for pr in batch:
+                    seen.setdefault(pr.product_id, pr)
+                log_step(f"  {c['label']} ({c['id']}): {len(batch)} products")
+            products = list(seen.values())
+        else:
+            products = scrape_offers_http(
+                settings.site, pages=pages, start_page=start_page,
+                delay_sec=settings.delay_between_pages_sec,
+            )
 
     log_ok(f"scraped {len(products)} products")
     if len(products) < settings.min_products_expected:
@@ -398,10 +439,12 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
     import offers as off
 
     pages = args.pages or settings.pages_per_run
+    # --category (repeatable) overrides config.categories; either can be empty.
+    categories = args.category if args.category else settings.get("categories")
     products, matched = _scrape_and_match(
         settings, pages=pages, headed=args.headed,
         keyword_overrides=args.keyword, source=args.source,
-        start_page=args.start_page,
+        start_page=args.start_page, categories=categories,
     )
 
     deals = off.filter_offers(matched, settings)
@@ -430,8 +473,10 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
     if not args.no_slack:
         import notifier
 
+        cats = _norm_categories(categories)
+        src = (f"{args.source} · {len(cats)} categories" if cats else args.source)
         notifier.notify(notifier.build_summary(
-            site=settings.site, source=args.source, pages=pages,
+            site=settings.site, source=src, pages=pages,
             scraped=len(products), matched=len(matched), deals=deals,
             queue_total=queue_total, per_label=off.summarize(matched),
         ))
@@ -815,6 +860,21 @@ def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
             link = links[deals[0].product_id]
         text = _render(deals[0], link, settings, use_llm=args.llm)
         _show(deals[0], link, text, "WOULD POST NEXT", source=True)
+
+        if args.image:
+            print()
+            log_stage("Producing the post image")
+            mode = settings.get("tweet_image_mode", "screenshot")
+            # store=None keeps simulate read-only: capture/render locally, no upload.
+            image_url, image_path = _resolve_image(deals[0], settings, store=None)
+            ref = image_url or image_path
+            if ref:
+                log_ok(f"image ready ({mode}): {ref}")
+                if image_path:
+                    log_step(f"open it locally:  {image_path}")
+            else:
+                log_warn("no image produced — a real post would fall back to the "
+                         f"product photo ({deals[0].image or 'none'})")
 
         # The rest of the queue, so it's clear what follows on later runs.
         upcoming = deals[1 : 1 + args.queue]
@@ -1310,7 +1370,8 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
     try:
         if args.ingest:
             pages = args.pages or settings.pages_per_run
-            _, matched = _scrape_and_match(settings, pages=pages, headed=False)
+            _, matched = _scrape_and_match(settings, pages=pages, headed=False,
+                                           categories=settings.get("categories"))
             run_id = store.start_run("post-ingest")
             store.record_snapshots(matched, run_id)
         else:

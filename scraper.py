@@ -171,7 +171,12 @@ def _amount(node: Any, selector: str) -> Optional[float]:
     if not whole:
         return None
     cents = el.select_one(".andes-money-amount__cents")
-    return float(f"{whole}.{re.sub(r'\\D', '', cents.get_text())}") if cents else float(whole)
+    if not cents:
+        return float(whole)
+    # Pulled out of the f-string: a backslash inside an f-string expression is a
+    # SyntaxError before Python 3.12, and \D (not \\D) is the right "non-digit".
+    cents_digits = re.sub(r"\D", "", cents.get_text())
+    return float(f"{whole}.{cents_digits}")
 
 
 def _parse_card(card: Any) -> Optional[dict[str, Any]]:
@@ -205,6 +210,17 @@ def _parse_card(card: Any) -> Optional[dict[str, Any]]:
     }
 
 
+def _offers_url(site: str, page: int, category: Optional[str] = None) -> str:
+    """Build an /ofertas URL. `category` (e.g. "MLA1051") filters server-side —
+    verified: ML honours ?category=, unlike ?q= which it silently ignores."""
+    params = []
+    if category:
+        params.append(f"category={category}")
+    if page != 1:  # page 1 is the bare page; ML's page= is only needed from 2 on
+        params.append(f"page={page}")
+    return f"{site}/ofertas" + (f"?{'&'.join(params)}" if params else "")
+
+
 def scrape_offers_http(
     site: str,
     *,
@@ -212,13 +228,16 @@ def scrape_offers_http(
     delay_sec: float = 1.5,
     start_page: int = 1,
     jitter: float = 0.5,
+    category: Optional[str] = None,
 ) -> list[Product]:
     """Crawl /ofertas over plain HTTP. Same output as the browser scraper.
 
     Paced deliberately. A fixed interval between requests is itself a bot
     signal, so each gap is randomised by +/- `jitter` around `delay_sec`.
     `start_page` lets a big crawl be split across several runs spread over the
-    day rather than arriving as one burst.
+    day rather than arriving as one burst. `category` restricts the crawl to one
+    Mercado Libre category (server-side filter), so a run can target notebooks,
+    celulares, etc. directly instead of the general firehose.
     """
     import random
 
@@ -229,11 +248,12 @@ def scrape_offers_http(
 
     site = site.rstrip("/")
     seen: dict[str, Product] = {}
+    tag = f" [{category}]" if category else ""
 
     with httpx.Client(timeout=30, headers=_HTTP_HEADERS, follow_redirects=True) as client:
         for n in range(start_page, start_page + pages):
-            url = f"{site}/ofertas" if n == 1 else f"{site}/ofertas?page={n}"
-            mlgate.wait(mlgate.ANON, label=f"ofertas p{n}")
+            url = _offers_url(site, n, category)
+            mlgate.wait(mlgate.ANON, label=f"ofertas{tag} p{n}")
             try:
                 resp = client.get(url)
             except Exception as e:  # noqa: BLE001 - one bad page shouldn't kill the run
@@ -257,10 +277,10 @@ def scrape_offers_http(
                 if product.product_id not in seen:
                     seen[product.product_id] = product
                     new += 1
-            log_step(f"page {n}: {len(batch)} cards, {new} new")
+            log_step(f"page{tag} {n}: {len(batch)} cards, {new} new")
 
             if not batch or new == 0:
-                log_step(f"page {n} added nothing new; stopping pagination")
+                log_step(f"page{tag} {n} added nothing new; stopping pagination")
                 break
             if n < start_page + pages - 1:
                 low = max(0.3, delay_sec * (1 - jitter))

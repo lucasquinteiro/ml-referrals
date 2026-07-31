@@ -97,6 +97,15 @@ _DEFAULTS: dict[str, Any] = {
     # "any_word"  -> every word of the term must appear somewhere in the title
     # "phrase"    -> the term must appear as a contiguous substring
     "keyword_match_mode": "any_word",
+    # Optional: restrict the /ofertas crawl to specific Mercado Libre categories
+    # (server-side filter — ML honours ?category=). When empty, the general
+    # /ofertas page is crawled. When set, each category is crawled in turn and
+    # the keyword filter still applies within it, giving far better coverage of
+    # the categories you care about. Entries: {"id": "MLA1051", "label": "..."}
+    # or a bare "MLA1051". Verified AR ids: notebooks MLA1652, celulares MLA1051,
+    # electrónica/audio/TV MLA1000, electrodomésticos MLA5726, consolas MLA1144,
+    # deportes MLA1276. Find others by browsing ML and reading the MLA… in the url.
+    "categories": [],
     # Words that disqualify a product no matter which keyword matched.
     # Useful to filter accessories out of "notebook", "iphone", etc.
     "global_exclude": ["funda", "case ", "protector", "repuesto", "replica"],
