@@ -67,6 +67,10 @@ def _parse_args() -> argparse.Namespace:
                      help="Snapshot every scraped product, not just keyword matches")
     ing.add_argument("--source", choices=["ofertas", "search"], default="ofertas",
                      help="ofertas (default, no login) or search (needs ./run login)")
+    ing.add_argument("--category", action="append", default=None, metavar="MLA_ID",
+                     help="Crawl only this /ofertas category (repeatable), e.g. "
+                          "--category MLA1051. Overrides config.categories. Handy "
+                          "for testing a single category from the console.")
     ing.add_argument("--no-slack", action="store_true",
                      help="Skip the Slack summary even if SLACK_WEBHOOK_URL is set")
     ing.add_argument("--start-page", type=int, default=1, metavar="N",
@@ -123,6 +127,11 @@ def _parse_args() -> argparse.Namespace:
     sim.add_argument("--no-links", action="store_true",
                      help="Skip affiliate-link resolution (no browser); render "
                           "the tweet with the plain product URL. Fast format preview.")
+    sim.add_argument("--image", action="store_true",
+                     help="Also produce the post image the way `post` would "
+                          "(screenshot mode captures the ML product page via the "
+                          "affiliate session) and report where it saved. Writes "
+                          "nothing to the store.")
     _freshness_flags(sim)
 
     ofr = sub.add_parser(
@@ -241,11 +250,27 @@ def _get_store(settings: Any):
     return Store(cfg.DB_PATH)
 
 
+def _norm_categories(categories) -> list[dict]:
+    """Normalise a categories config/CLI value into [{"id","label"}, ...]."""
+    out = []
+    for c in categories or []:
+        if isinstance(c, dict) and c.get("id"):
+            out.append({"id": c["id"], "label": c.get("label") or c["id"]})
+        elif isinstance(c, str) and c.strip():
+            out.append({"id": c.strip(), "label": c.strip()})
+    return out
+
+
 def _scrape_and_match(
     settings: Any, *, pages: int, headed: bool, keyword_overrides=None,
-    source: str = "ofertas", start_page: int = 1,
+    source: str = "ofertas", start_page: int = 1, categories=None,
 ):
-    """Shared by `ingest` and `post --ingest`. Returns (all_products, matched)."""
+    """Shared by `ingest` and `post --ingest`. Returns (all_products, matched).
+
+    When `categories` is given (and source is the default /ofertas HTTP path),
+    each category's offers are crawled in turn and merged, rather than the
+    general /ofertas page — a server-side filter for better category coverage.
+    """
     import auth
     from lib.log import log_ok, log_stage, log_step
     import offers as off
@@ -288,10 +313,26 @@ def _scrape_and_match(
         # it lets the CI job skip installing Chromium entirely.
         from scraper import scrape_offers_http
 
-        products = scrape_offers_http(
-            settings.site, pages=pages, start_page=start_page,
-            delay_sec=settings.delay_between_pages_sec,
-        )
+        cats = _norm_categories(categories)
+        if cats:
+            log_step(f"crawling {len(cats)} categor"
+                     f"{'y' if len(cats) == 1 else 'ies'}: "
+                     + ", ".join(c["label"] for c in cats))
+            seen: dict[str, Any] = {}
+            for c in cats:
+                batch = scrape_offers_http(
+                    settings.site, pages=pages, start_page=start_page,
+                    delay_sec=settings.delay_between_pages_sec, category=c["id"],
+                )
+                for pr in batch:
+                    seen.setdefault(pr.product_id, pr)
+                log_step(f"  {c['label']} ({c['id']}): {len(batch)} products")
+            products = list(seen.values())
+        else:
+            products = scrape_offers_http(
+                settings.site, pages=pages, start_page=start_page,
+                delay_sec=settings.delay_between_pages_sec,
+            )
 
     log_ok(f"scraped {len(products)} products")
     if len(products) < settings.min_products_expected:
@@ -398,10 +439,12 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
     import offers as off
 
     pages = args.pages or settings.pages_per_run
+    # --category (repeatable) overrides config.categories; either can be empty.
+    categories = args.category if args.category else settings.get("categories")
     products, matched = _scrape_and_match(
         settings, pages=pages, headed=args.headed,
         keyword_overrides=args.keyword, source=args.source,
-        start_page=args.start_page,
+        start_page=args.start_page, categories=categories,
     )
 
     deals = off.filter_offers(matched, settings)
@@ -430,8 +473,10 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
     if not args.no_slack:
         import notifier
 
+        cats = _norm_categories(categories)
+        src = (f"{args.source} · {len(cats)} categories" if cats else args.source)
         notifier.notify(notifier.build_summary(
-            site=settings.site, source=args.source, pages=pages,
+            site=settings.site, source=src, pages=pages,
             scraped=len(products), matched=len(matched), deals=deals,
             queue_total=queue_total, per_label=off.summarize(matched),
         ))
@@ -608,6 +653,10 @@ def _capture_offer_image(
         raw = shot_mod.capture_offer_card(
             product, shots / f"{product.product_id}.png",
             site=settings.site, source=source, search_term=term, max_pages=3,
+            # The product may have come from a category-filtered ingest, so a
+            # niche category's card can miss the plain /ofertas top pages —
+            # try the configured categories too, not just the generic pool.
+            categories=settings.get("categories"),
         )
         if raw:
             break
@@ -617,6 +666,9 @@ def _capture_offer_image(
     composed = card_mod.compose_screenshot(
         raw, shots / f"{product.product_id}-card.png", product=product
     )
+    if store is None:
+        return str(composed)
+
     # On Supabase, push the PNG to Storage so any machine can fetch it; on
     # SQLite the local path is the reference (the droplet reads its own disk).
     try:
@@ -631,35 +683,118 @@ def _capture_offer_image(
     return ref
 
 
+def _render_card_image(product: Any, settings: Any, store: Any = None):
+    """Compose an ML-style offer card from data alone; cache it. Returns a ref.
+
+    Unlike _capture_offer_image, this touches no Mercado Libre page: card_html
+    fills templates/offer_card.html with the product data we already hold plus
+    the product photo, then screenshots it headless. No session, no login wall,
+    no rate gate — so it can't time a post out on a walled burner. Returns the
+    stored ref (URL or local path), or None so the caller falls back to the
+    bare product photo.
+    """
+    import card_html
+    from lib.log import log_err, log_step, log_warn
+
+    out = cfg.STATE_DIR / "shots" / f"{product.product_id}-card.png"
+    try:
+        card_html.render(product, out, brand=settings.get("tweet_signature", "") or "")
+    except Exception as e:  # noqa: BLE001 - any render failure degrades gracefully
+        log_warn(f"card render failed ({type(e).__name__}: {e}); using product photo")
+        return None
+
+    if store is None:
+        log_step("rendered offer card from data")
+        return str(out)
+
+    try:
+        url = store.upload_image(product.product_id, out)
+    except RuntimeError as e:
+        log_err(str(e))
+        return None
+    ref = url or str(out)
+    store.save_offer_image(product_id=product.product_id, url=ref, local_path=str(out))
+    log_step("rendered and cached offer card from data")
+    return ref
+
+
+def _capture_pdp_image(product: Any, settings: Any, store: Any = None):
+    """Screenshot the product's ML detail page (the desktop hero) at post time.
+
+    This is the authentic-looking capture the deal accounts use — ML's real
+    price block, cuotas and "medios de pago", not a reconstruction. It uses the
+    affiliate session for a single, human-paced load per post (~8/day), gated
+    through mlgate's affiliate budget. Returns a cached ref, or None so the
+    caller falls back to the bare product photo (never the synthetic card).
+    """
+    import screenshot as shot_mod
+    from lib.log import log_err, log_step
+
+    out = cfg.STATE_DIR / "shots" / f"{product.product_id}-pdp.png"
+    shot = shot_mod.capture_product_page(product, out, site=settings.site)
+    if not shot:
+        return None
+    if store is None:
+        return str(shot)
+
+    try:
+        url = store.upload_image(product.product_id, shot)
+    except RuntimeError as e:
+        log_err(str(e))
+        return None
+    ref = url or str(shot)
+    store.save_offer_image(product_id=product.product_id, url=ref, local_path=str(shot))
+    log_step("cached product-page screenshot")
+    return ref
+
+
 def _resolve_image(product: Any, settings: Any, store: Any = None):
     """Pick the picture for a tweet. Returns (image_url, local_path).
 
-    "screenshot" mode uses Mercado Libre's own offer card — the look people
-    recognise. It's captured lazily for just this one product and cached, so a
-    post costs at most one gated screenshot. Degrades to the product photo when
-    the offer can't be found (rotated off, or no session for search).
+    "screenshot" the compact ML offer card (poly-card: photo, title, discount
+                 pill, price) via _capture_offer_image — anonymous /ofertas
+                 (+ configured categories), no session at all. Tight crop, no
+                 padding. The default.
+    "pdp"        ML's real product page (the desktop hero: gallery + price
+                 block + cuotas), via the affiliate session — one gentle load
+                 per post. More ML chrome, but padded and session-dependent.
+    "card"       composes an ML-style card from data alone (card_html) — never
+                 walls, but not pixel-identical to ML, so off by default.
+    "product"    the bare product photo.
+    Every mode degrades to the bare product photo when its image can't be
+    produced — a screenshot that fails never posts the synthetic card.
     """
     from lib.log import log_step
 
-    mode = settings.get("tweet_image_mode", "product")
+    mode = settings.get("tweet_image_mode", "screenshot")
     if mode == "none":
         return None, None
 
     def _as_pair(ref: str):
         return (ref, None) if ref.startswith("http") else (None, ref)
 
-    # A previously-cached card always wins — no ML request at all.
+    # A previously-cached image always wins — no ML request, no re-render.
     if store is not None:
         stored = store.get_offer_images([product.product_id]).get(product.product_id)
         if stored and (stored.startswith("http") or Path(stored).is_file()):
-            log_step("using the stored offer-card image")
+            log_step("using the stored offer image")
             return _as_pair(stored)
 
-    if mode == "screenshot" and store is not None:
+    if mode == "screenshot":
         ref = _capture_offer_image(product, settings, store)
         if ref:
             return _as_pair(ref)
-        log_step("no offer card available — using the product photo")
+        log_step("no offer-card screenshot — using the product photo")
+    elif mode == "pdp":
+        ref = _capture_pdp_image(product, settings, store)
+        if ref:
+            return _as_pair(ref)
+        log_step("no product-page screenshot — using the product photo")
+    elif mode == "card":
+        ref = _render_card_image(product, settings, store)
+        if ref:
+            return _as_pair(ref)
+        log_step("card render unavailable — using the product photo")
 
     return (product.image or None), None
 
@@ -741,6 +876,21 @@ def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
             link = links[deals[0].product_id]
         text = _render(deals[0], link, settings, use_llm=args.llm)
         _show(deals[0], link, text, "WOULD POST NEXT", source=True)
+
+        if args.image:
+            print()
+            log_stage("Producing the post image")
+            mode = settings.get("tweet_image_mode", "screenshot")
+            # store=None keeps simulate read-only: capture/render locally, no upload.
+            image_url, image_path = _resolve_image(deals[0], settings, store=None)
+            ref = image_url or image_path
+            if ref:
+                log_ok(f"image ready ({mode}): {ref}")
+                if image_path:
+                    log_step(f"open it locally:  {image_path}")
+            else:
+                log_warn("no image produced — a real post would fall back to the "
+                         f"product photo ({deals[0].image or 'none'})")
 
         # The rest of the queue, so it's clear what follows on later runs.
         upcoming = deals[1 : 1 + args.queue]
@@ -1236,7 +1386,8 @@ def cmd_post(args: argparse.Namespace, settings: Any) -> int:
     try:
         if args.ingest:
             pages = args.pages or settings.pages_per_run
-            _, matched = _scrape_and_match(settings, pages=pages, headed=False)
+            _, matched = _scrape_and_match(settings, pages=pages, headed=False,
+                                           categories=settings.get("categories"))
             run_id = store.start_run("post-ingest")
             store.record_snapshots(matched, run_id)
         else:

@@ -1,0 +1,105 @@
+<!--
+  ML-style offer card template.
+
+  This is authored ONCE and then filled per-product by card_html.render().
+  It reproduces the visual language of Mercado Libre's "poly-card" (the grid
+  card on /ofertas and search) from the factual product data we already hold:
+  photo, both prices, the derived discount, installments, shipping, seller.
+
+  It is NOT a screenshot of ML's page — nothing here is fetched from ML except
+  the product photo (whose URL the API returns). Every {{TOKEN}} below is
+  replaced by card_html.render() with an already-escaped value or fragment.
+
+  Design notes / ML colour cues:
+    green  #00a650  price accents, discount, free shipping
+    text   rgba(0,0,0,.9)     titles
+    muted  rgba(0,0,0,.55)    seller, strikethrough
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #ededed; }
+  /* The screenshot target. ML's card sits on a light-grey page, so we keep a
+     little grey around it — that framing is part of "looks like ML". */
+  #frame { display: inline-block; padding: 24px; background: #ededed; }
+
+  .poly-card {
+    width: 300px;
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: 0 1px 2px 0 rgba(0,0,0,.2);
+    font-family: "Montserrat", -apple-system, "Helvetica Neue", "Liberation Sans", Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  .poly-card__portada {
+    position: relative;
+    height: 300px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: #fff;
+  }
+  .poly-card__portada img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+  /* Top-left status pill: "MÁS VENDIDO", "OFERTA DEL DÍA", etc. */
+  .poly-card__pill {
+    position: absolute;
+    top: 12px; left: 12px;
+    font-size: 11px; font-weight: 600;
+    color: #fff; background: #3483fa;
+    padding: 3px 8px; border-radius: 2px;
+  }
+
+  .poly-card__content { padding: 0 16px 16px; }
+
+  .poly-price__was {
+    font-size: 12px;
+    color: rgba(0,0,0,.55);
+    text-decoration: line-through;
+    margin-top: 4px;
+  }
+  .poly-price__row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+  .poly-price__now { font-size: 24px; font-weight: 400; color: rgba(0,0,0,.9); }
+  .poly-price__off { font-size: 14px; font-weight: 600; color: #00a650; }
+
+  .poly-price__installments {
+    font-size: 14px; color: #00a650; margin-top: 4px;
+  }
+  .poly-shipping { font-size: 14px; font-weight: 600; color: #00a650; margin-top: 6px; }
+
+  .poly-title {
+    font-size: 14px; line-height: 1.3; color: rgba(0,0,0,.9);
+    margin-top: 12px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .poly-seller { font-size: 12px; color: rgba(0,0,0,.55); margin-top: 8px; }
+
+  .poly-rating { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+  .poly-rating__score { font-size: 12px; color: rgba(0,0,0,.55); }
+  .poly-rating__stars { display: inline-flex; align-items: center; gap: 1px; }
+  .poly-rating__stars svg { width: 11px; height: 11px; display: block; }
+  .poly-rating__count { font-size: 12px; color: rgba(0,0,0,.45); }
+</style>
+
+<div id="frame">
+  <div class="poly-card">
+    <div class="poly-card__portada">
+      {{PILL}}
+      <img src="{{IMAGE_URL}}" alt="">
+    </div>
+    <div class="poly-card__content">
+      {{WAS}}
+      <div class="poly-price__row">
+        <span class="poly-price__now">{{NOW}}</span>
+        {{OFF}}
+      </div>
+      {{INSTALLMENTS}}
+      {{SHIPPING}}
+      <div class="poly-title">{{TITLE}}</div>
+      {{SELLER}}
+      {{RATING}}
+    </div>
+  </div>
+</div>

@@ -97,6 +97,15 @@ _DEFAULTS: dict[str, Any] = {
     # "any_word"  -> every word of the term must appear somewhere in the title
     # "phrase"    -> the term must appear as a contiguous substring
     "keyword_match_mode": "any_word",
+    # Optional: restrict the /ofertas crawl to specific Mercado Libre categories
+    # (server-side filter — ML honours ?category=). When empty, the general
+    # /ofertas page is crawled. When set, each category is crawled in turn and
+    # the keyword filter still applies within it, giving far better coverage of
+    # the categories you care about. Entries: {"id": "MLA1051", "label": "..."}
+    # or a bare "MLA1051". Verified AR ids: notebooks MLA1652, celulares MLA1051,
+    # electrónica/audio/TV MLA1000, electrodomésticos MLA5726, consolas MLA1144,
+    # deportes MLA1276. Find others by browsing ML and reading the MLA… in the url.
+    "categories": [],
     # Words that disqualify a product no matter which keyword matched.
     # Useful to filter accessories out of "notebook", "iphone", etc.
     "global_exclude": ["funda", "case ", "protector", "repuesto", "replica"],
@@ -173,8 +182,11 @@ _DEFAULTS: dict[str, Any] = {
     # as spam, and one at a time keeps every publish reviewable.
     # Prefer the LLM for tweet copy; falls back to templates when no API key
     # is configured or the call fails.
-    "use_llm_for_copy": True,
+    "use_llm_for_copy": False,
     "tweet_language": "es-AR",
+    # Where the affiliate link sits in the tweet: "bottom" (default — lead with
+    # the hook, link as the closing CTA next to the screenshot) or "top".
+    "link_position": "bottom",
     # Optional signature line appended to every tweet (brand sign-off). The 🦈
     # already leads each template, so this defaults off; set e.g. "🦈 Shark Deals".
     "tweet_signature": "",
@@ -187,13 +199,20 @@ _DEFAULTS: dict[str, Any] = {
     # running log of what actually went out.
     "mirror_to_slack": True,
     # What picture to attach:
+    #   "screenshot" the compact ML offer card (poly-card: photo, title,
+    #                discount pill, price) — anonymous /ofertas (+ configured
+    #                categories), no session at all, tight crop. The default.
+    #   "pdp"        ML's real product page (desktop hero: gallery + price block
+    #                + cuotas), captured with the affiliate session — one gentle
+    #                load per post. More ML chrome, but padded and session-
+    #                dependent.
+    #   "card"       an ML-style card composed from data (card_html) — never
+    #                walls, but not pixel-identical to ML, so off by default.
     #   "product"    the product photo, uploaded natively (no browser)
-    #   "screenshot" MercadoLibre's own compact offer card (photo, title,
-    #                discount, price) — found by searching the product's keyword,
-    #                on a clean white canvas (no blurred backdrop)
     #   "none"       text only
-    # Any failure falls back down this list rather than losing the tweet.
-    "tweet_image_mode": "product",
+    # Any failure falls back to the bare product photo (never the synthetic
+    # card) rather than losing the tweet.
+    "tweet_image_mode": "screenshot",
     # Appended to every tweet (kept short — links eat 23 chars).
     "tweet_hashtags": ["#Ofertas"],
     # Affiliate-disclosure suffix. Required by most jurisdictions and by X's

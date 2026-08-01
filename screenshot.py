@@ -58,9 +58,14 @@ _HIDE_OVERLAYS_CSS = """
 SCALE = 3
 
 
-def _offers_url(site: str, page: int) -> str:
+def _offers_url(site: str, page: int, category: Optional[str] = None) -> str:
     base = f"{site.rstrip('/')}/ofertas"
-    return base if page <= 1 else f"{base}?page={page}"
+    params = []
+    if category:
+        params.append(f"category={category}")
+    if page > 1:
+        params.append(f"page={page}")
+    return base + (f"?{'&'.join(params)}" if params else "")
 
 
 def _search_url(site: str, term: str, page: int) -> str:
@@ -100,46 +105,42 @@ def capture_product_page(
     """Screenshot the product's *desktop* detail page — one page load.
 
     This is the desktop layout (gallery, title, price, buy box), not the compact
-    listing card. Product pages are behind the login wall, so it uses the
-    scraping session; the run's nav/identity chrome is hidden first so nothing
-    personal is captured. One gated request, versus scanning a dozen listing
-    pages for a card — which is both faster and what fixes the post timeouts.
-    """
-    from playwright.sync_api import sync_playwright
+    listing card. Product pages sit behind the login wall, so it uses the
+    affiliate session — deliberately, not the burner: at post time this is a
+    single, human-paced load (~8/day), gated through mlgate's affiliate budget,
+    which is the gentle usage a real account survives. The nav/identity chrome
+    is hidden first so nothing personal is captured.
 
+    Note: driving PDPs *repeatedly* has walled the affiliate account fast in the
+    past, so keep this to one shot per post and prefer a persistent profile.
+    """
     import auth
     from lib import mlgate
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not auth.has_session(auth.SCRAPING):
-        log_warn("screenshot: product pages need `./run login --role scraping`")
+    role = auth.AFFILIATE
+    if not auth.has_session(role):
+        log_warn("screenshot: product pages need `./run login --role affiliate`")
         return None
 
-    state = auth.storage_state_path(auth.SCRAPING)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
-        try:
-            ctx = browser.new_context(
-                locale="es-AR",
-                user_agent=UA,
-                # A wide desktop viewport so ML serves the desktop layout, not
-                # the narrow/mobile breakpoint.
-                viewport={"width": 1440, "height": 1600},
-                device_scale_factor=2,
-                storage_state=str(state) if state else None,
-            )
+    # BrowserSession picks the persistent profile over a frozen snapshot when one
+    # exists — preferred here, since a live profile keeps ML's rotating tokens
+    # fresh and PDPs are wall-prone.
+    try:
+        with auth.BrowserSession(
+            role, headless=True, user_agent=UA,
+            viewport={"width": 1440, "height": 1600}, device_scale_factor=2,
+        ) as ctx:
             page = ctx.new_page()
-            mlgate.wait(mlgate.SCRAPING, label="pdp screenshot")
+            mlgate.wait(mlgate.AFFILIATE, label="pdp screenshot")
             page.goto(product.url, wait_until="domcontentloaded", timeout=timeout_ms)
             if any(m in page.url for m in _WALL_MARKERS):
-                mlgate.trip(mlgate.SCRAPING, "pdp wall")
-                log_warn("screenshot: product page hit the login wall — session "
-                         "expired; re-run `./run login --role scraping`")
+                mlgate.trip(mlgate.AFFILIATE, "pdp wall")
+                log_warn("screenshot: product page hit the login wall — the "
+                         "affiliate session expired; re-run "
+                         "`./run login --role affiliate`")
                 return None
             page.wait_for_timeout(2500)
             page.add_style_tag(content=_PDP_HIDE_CSS)
@@ -175,8 +176,9 @@ def capture_product_page(
             page.screenshot(path=str(out_path), clip=clip)
             log_step("captured desktop product page")
             return out_path
-        finally:
-            browser.close()
+    except Exception as e:  # noqa: BLE001 - never let a capture crash a post
+        log_warn(f"pdp screenshot failed ({type(e).__name__}: {e})")
+        return None
 
 
 def capture_offer_card(
@@ -189,13 +191,19 @@ def capture_offer_card(
     timeout_ms: int = 45_000,
     source: str = "ofertas",
     search_term: str = "",
+    categories: Optional[list[str]] = None,
 ) -> Optional[Path]:
     """Screenshot `product`'s card. Returns None when it can't be found.
 
     Two sources, same card markup:
 
       "ofertas"  the public offers page — anonymous, no session, safe to run
-                 often. Only covers what Mercado Libre flags as discounted.
+                 often. Only covers what Mercado Libre flags as discounted. When
+                 `categories` is given (the same list ingest crawled), each
+                 category's /ofertas?category= is tried in turn — a product
+                 scraped from a niche category may not surface within
+                 `max_pages` of the plain, unfiltered /ofertas, but it's
+                 guaranteed to be near the front of the category it came from.
       "search"   the keyword listings, which is where products ML doesn't
                  surface as "offers" live. Behind the login wall, so this needs
                  the scraping session and should be done in the same sitting as
@@ -233,6 +241,15 @@ def capture_offer_card(
         log_warn("screenshot: search source needs `./run login --role scraping`")
         return None
 
+    # Candidate category filters to try, in order: no filter first (fastest
+    # when the product is a broadly-featured deal), then each configured
+    # category (dedup, category filters only apply to source="ofertas").
+    cat_attempts: list[Optional[str]] = [None]
+    if source == "ofertas" and categories:
+        for c in categories:
+            if c and c not in cat_attempts:
+                cat_attempts.append(c)
+
     with auth.BrowserSession(
         role, viewport={"width": 1440, "height": 1000},
         device_scale_factor=SCALE, user_agent=UA,
@@ -244,51 +261,56 @@ def capture_offer_card(
 
             gate_account = mlgate.SCRAPING if source == "search" else mlgate.ANON
 
-            for page_no in order:
-                url = (_search_url(site, term, page_no) if source == "search"
-                       else _offers_url(site, page_no))
-                try:
-                    mlgate.wait(gate_account, label=f"card {source} p{page_no}")
-                    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    if any(m in page.url for m in _WALL_MARKERS):
-                        mlgate.trip(gate_account, f"{source} wall")
-                        log_warn("screenshot: hit the login wall — the scraping "
-                                 "session has expired; re-run `./run login --role scraping`")
-                        return None
-                    page.wait_for_selector(CARD_SELECTOR, timeout=25_000)
-                    page.add_style_tag(content=_HIDE_OVERLAYS_CSS)
-                except Exception as e:  # noqa: BLE001 - try the next page
-                    log_warn(f"screenshot: page {page_no} failed "
-                             f"({type(e).__name__}); trying next")
-                    continue
+            for cat in cat_attempts:
+                for page_no in order:
+                    url = (_search_url(site, term, page_no) if source == "search"
+                           else _offers_url(site, page_no, cat))
+                    label = f"card {source}{f'[{cat}]' if cat else ''} p{page_no}"
+                    try:
+                        mlgate.wait(gate_account, label=label)
+                        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                        if any(m in page.url for m in _WALL_MARKERS):
+                            mlgate.trip(gate_account, f"{source} wall")
+                            log_warn("screenshot: hit the login wall — the scraping "
+                                     "session has expired; re-run `./run login --role scraping`")
+                            return None
+                        page.wait_for_selector(CARD_SELECTOR, timeout=25_000)
+                        page.add_style_tag(content=_HIDE_OVERLAYS_CSS)
+                    except Exception as e:  # noqa: BLE001 - try the next page
+                        log_warn(f"screenshot: page {page_no} failed "
+                                 f"({type(e).__name__}); trying next")
+                        continue
 
-                index = page.evaluate(
-                    """([sel, titleSel, pattern]) => {
-                        const re = new RegExp(pattern, 'i');
-                        const cards = document.querySelectorAll(sel);
-                        for (let i = 0; i < cards.length; i++) {
-                            const a = cards[i].querySelector(titleSel);
-                            if (a && re.test(a.href)) return i;
-                        }
-                        return -1;
-                    }""",
-                    [CARD_SELECTOR, TITLE_SELECTOR, loose.pattern],
-                )
-                if index is None or index < 0:
-                    continue
+                    index = page.evaluate(
+                        """([sel, titleSel, pattern]) => {
+                            const re = new RegExp(pattern, 'i');
+                            const cards = document.querySelectorAll(sel);
+                            for (let i = 0; i < cards.length; i++) {
+                                const a = cards[i].querySelector(titleSel);
+                                if (a && re.test(a.href)) return i;
+                            }
+                            return -1;
+                        }""",
+                        [CARD_SELECTOR, TITLE_SELECTOR, loose.pattern],
+                    )
+                    if index is None or index < 0:
+                        continue
 
-                card = page.locator(CARD_SELECTOR).nth(index)
-                # Images are lazy-loaded; the card must be on screen and settled
-                # or the screenshot catches an empty photo area.
-                card.scroll_into_view_if_needed()
-                page.wait_for_timeout(1500)
-                card.screenshot(path=str(out_path))
-                log_step(f"captured offer card from {'search' if source == 'search' else '/ofertas'} page {page_no}")
-                return out_path
+                    card = page.locator(CARD_SELECTOR).nth(index)
+                    # Images are lazy-loaded; the card must be on screen and
+                    # settled or the screenshot catches an empty photo area.
+                    card.scroll_into_view_if_needed()
+                    page.wait_for_timeout(1500)
+                    card.screenshot(path=str(out_path))
+                    where = (f"search '{term}'" if source == "search"
+                             else f"/ofertas{f'?category={cat}' if cat else ''}")
+                    log_step(f"captured offer card from {where} page {page_no}")
+                    return out_path
 
             where = f"search '{term}'" if source == "search" else "/ofertas"
+            tried = f" ({len(cat_attempts)} categor{'y' if len(cat_attempts)==1 else 'ies'} tried)" if len(cat_attempts) > 1 else ""
             log_warn(f"screenshot: {pid} not found in {max_pages} page(s) of "
-                     f"{where}")
+                     f"{where}{tried}")
             return None
         except Exception as e:  # noqa: BLE001 - never let a capture crash a post
             log_warn(f"screenshot failed ({type(e).__name__}: {e})")
