@@ -240,6 +240,13 @@ def _parse_args() -> argparse.Namespace:
     rep.add_argument("--export", metavar="PATH", default=None,
                      help="Write the full price history to a JSON file")
 
+    st = sub.add_parser(
+        "status",
+        help="Summarize recent ingestions and postings from the activity log",
+    )
+    st.add_argument("--recent", type=int, default=8,
+                    help="How many recent runs/posts to list (default 8)")
+
     setaff = sub.add_parser(
         "set-affiliate",
         help="Configure your affiliate tag from a link generated in the dashboard",
@@ -1717,6 +1724,91 @@ def cmd_report(args: argparse.Namespace, settings: Any) -> int:
     return 0
 
 
+def _rel_age(iso: Optional[str]) -> str:
+    """A compact 'time ago' for an ISO timestamp: '3m', '2h', '5d', or 'never'."""
+    if not iso:
+        return "never"
+    try:
+        from datetime import datetime, timezone
+
+        t = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return str(iso)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    secs = (datetime.now(timezone.utc) - t).total_seconds()
+    if secs < 90:
+        return "just now"
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= size:
+            return f"{int(secs // size)}{unit} ago"
+    return "just now"
+
+
+def cmd_status(args: argparse.Namespace, settings: Any) -> int:
+    """A quick read on what the pipeline has been doing: ingestion and posting
+    activity over the last 24h / 7d, and a timeline of the most recent of each.
+
+    Reads the same `runs` and `posts` tables the pipeline writes as it works —
+    no separate bookkeeping to fall out of sync with reality."""
+    from lib.log import log_stage, log_step
+
+    store = _get_store(settings)
+    try:
+        act = store.activity(recent=args.recent)
+        ing, po = act["ingests"], act["posts"]
+
+        log_stage("Pipeline")
+        log_step(f"posting mode   {cfg.get_posting_mode().upper()}")
+        log_step(f"store backend  {settings.store}")
+        age = store.data_age_hours()
+        log_step("scraped data   " +
+                 ("no snapshots yet" if age is None else f"{age:.1f}h old"))
+
+        log_stage("Ingestions (scrape runs)")
+        log_step(f"last 24h  {ing['h24']}")
+        log_step(f"last 7d   {ing['d7']}  "
+                 f"({ing['products_seen_d7']} seen → {ing['offers_matched_d7']} matched)")
+        log_step(f"total     {ing['total']}   last {_rel_age(ing['last_at'])}")
+
+        log_stage("Postings (real, dry runs excluded)")
+        log_step(f"last 24h  {po['h24']}")
+        log_step(f"last 7d   {po['d7']}")
+        log_step(f"total     {po['total']}   last {_rel_age(po['last_at'])}")
+        if po["by_target_d7"]:
+            log_step("by target (7d)  " +
+                     "  ".join(f"{k}={v}" for k, v in po["by_target_d7"].items()))
+        if po["by_label_d7"]:
+            log_step("by category (7d)  " +
+                     "  ".join(f"{k or '?'}={v}" for k, v in po["by_label_d7"].items()))
+
+        log_stage(f"Recent ingestions (last {args.recent})")
+        if not act["recent_runs"]:
+            log_step("none yet")
+        for r in act["recent_runs"]:
+            log_step(
+                f"{_rel_age(r.get('started_at')):>9}  "
+                f"{(r.get('kind') or '?'):11} "
+                f"{r.get('products_seen') or 0:>4} seen → "
+                f"{r.get('offers_matched') or 0:>3} matched"
+                + (f"  ({r['note']})" if r.get("note") else "")
+            )
+
+        log_stage(f"Recent postings (last {args.recent})")
+        if not act["recent_posts"]:
+            log_step("none yet")
+        for p in act["recent_posts"]:
+            disc = f"{p.get('discount_pct')}%" if p.get("discount_pct") else "  ?"
+            log_step(
+                f"{_rel_age(p.get('posted_at')):>9}  "
+                f"{(p.get('target') or '?'):13} "
+                f"{disc:>4}  {(p.get('title') or '')[:52]}"
+            )
+    finally:
+        store.close()
+    return 0
+
+
 def _write_env(updates: dict[str, str]) -> None:
     """Set keys in .env, preserving everything else in the file."""
     path = cfg.ENV_FILE
@@ -1954,6 +2046,7 @@ def main() -> int:
         "post": cmd_post,
         "promote": cmd_promote,
         "report": cmd_report,
+        "status": cmd_status,
         "set-affiliate": cmd_set_affiliate,
         "affiliate-tags": cmd_affiliate_tags,
         "check-affiliate": cmd_check_affiliate,

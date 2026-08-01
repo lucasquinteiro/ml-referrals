@@ -377,6 +377,96 @@ class SupabaseStore:
             "last_run": last[0]["started_at"] if last else "",
         }
 
+    def recent_runs(self, limit: int = 8) -> list[dict[str, Any]]:
+        return (
+            self.sb.table("mlr_runs")
+            .select("id, started_at, kind, products_seen, offers_matched, note")
+            .order("started_at", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+
+    def recent_posts(self, limit: int = 8, include_dry: bool = False) -> list[dict[str, Any]]:
+        q = (
+            self.sb.table("mlr_posts")
+            .select("posted_at, target, matched_label, discount_pct, price, "
+                    "currency, title, tweet_url, dry_run")
+            .order("posted_at", desc=True)
+            .limit(limit)
+        )
+        if not include_dry:
+            q = q.eq("dry_run", False)
+        return q.execute().data or []
+
+    def activity(self, recent: int = 8) -> dict[str, Any]:
+        """Ingestion + posting summary over rolling windows plus the most recent
+        runs and posts — same shape as Store.activity(). PostgREST can't SUM or
+        GROUP BY, so the 7-day rollups are computed in Python from a single fetch
+        of each window's rows."""
+        now = datetime.now(timezone.utc)
+        h24 = (now - timedelta(hours=24)).isoformat()
+        d7 = (now - timedelta(days=7)).isoformat()
+
+        def count(table: str, since: Optional[str] = None, **eq: Any) -> int:
+            q = self.sb.table(table).select("*", count="exact").limit(1)
+            for k, v in eq.items():
+                q = q.eq(k, v)
+            if since is not None:
+                q = q.gte("started_at" if table == "mlr_runs" else "posted_at", since)
+            return q.execute().count or 0
+
+        runs_7d = (
+            self.sb.table("mlr_runs")
+            .select("started_at, products_seen, offers_matched")
+            .gte("started_at", d7)
+            .execute()
+        ).data or []
+        last_run = (
+            self.sb.table("mlr_runs").select("started_at")
+            .order("started_at", desc=True).limit(1).execute()
+        ).data or []
+        ingests = {
+            "h24": count("mlr_runs", since=h24),
+            "d7": len(runs_7d),
+            "total": count("mlr_runs"),
+            "last_at": last_run[0]["started_at"] if last_run else None,
+            "products_seen_d7": sum(r.get("products_seen") or 0 for r in runs_7d),
+            "offers_matched_d7": sum(r.get("offers_matched") or 0 for r in runs_7d),
+        }
+
+        posts_7d = (
+            self.sb.table("mlr_posts")
+            .select("target, matched_label")
+            .eq("dry_run", False)
+            .gte("posted_at", d7)
+            .execute()
+        ).data or []
+        last_post = (
+            self.sb.table("mlr_posts").select("posted_at")
+            .eq("dry_run", False).order("posted_at", desc=True).limit(1).execute()
+        ).data or []
+
+        def tally(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+            out: dict[str, int] = {}
+            for r in rows:
+                out[r.get(key) or "?"] = out.get(r.get(key) or "?", 0) + 1
+            return dict(sorted(out.items(), key=lambda kv: kv[1], reverse=True))
+
+        posts = {
+            "h24": count("mlr_posts", since=h24, dry_run=False),
+            "d7": len(posts_7d),
+            "total": count("mlr_posts", dry_run=False),
+            "last_at": last_post[0]["posted_at"] if last_post else None,
+            "by_target_d7": tally(posts_7d, "target"),
+            "by_label_d7": tally(posts_7d, "matched_label"),
+        }
+        return {
+            "ingests": ingests,
+            "posts": posts,
+            "recent_runs": self.recent_runs(recent),
+            "recent_posts": self.recent_posts(recent),
+        }
+
     def top_offers(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = (
             self.sb.table("mlr_price_history")

@@ -287,6 +287,7 @@ Everything else:
 ./run offers --limit 20         # browse the whole queue
 ./run db --name offers          # query the store (see below)
 ./run report                    # summary of what's in the store
+./run status                    # recent ingestion + posting activity (24h/7d)
 ./run set-affiliate <link>      # configure your affiliate tag
 ./run check-affiliate <url>     # verify your affiliate link shape
 ./run post --ingest             # scrape fresh, then post from that

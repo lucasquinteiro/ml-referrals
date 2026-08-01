@@ -438,6 +438,70 @@ class Store:
             "last_run": q("SELECT COALESCE(MAX(started_at), '') FROM runs"),
         }
 
+    def recent_runs(self, limit: int = 8) -> list[dict[str, Any]]:
+        """The last `limit` ingestion runs, most recent first."""
+        rows = self.conn.execute(
+            """SELECT id, started_at, kind, products_seen, offers_matched, note
+               FROM runs ORDER BY started_at DESC, id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def recent_posts(self, limit: int = 8, include_dry: bool = False) -> list[dict[str, Any]]:
+        """The last `limit` posts, most recent first (real posts only unless
+        include_dry). What actually went out, for the status timeline."""
+        where = "" if include_dry else "WHERE dry_run = 0"
+        rows = self.conn.execute(
+            f"""SELECT posted_at, target, matched_label, discount_pct, price,
+                       currency, title, tweet_url, dry_run
+                FROM posts {where}
+                ORDER BY posted_at DESC, id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def activity(self, recent: int = 8) -> dict[str, Any]:
+        """One-shot summary for `./run status`: ingestion + posting counts over
+        rolling windows, plus the most recent runs and posts. Bundled so the CLI
+        stays thin and both store backends return the same shape."""
+        now = datetime.now(timezone.utc)
+        h24 = (now - timedelta(hours=24)).isoformat()
+        d7 = (now - timedelta(days=7)).isoformat()
+        one = lambda sql, *p: self.conn.execute(sql, p).fetchone()[0]  # noqa: E731
+
+        ingests = {
+            "h24": one("SELECT COUNT(*) FROM runs WHERE started_at >= ?", h24),
+            "d7": one("SELECT COUNT(*) FROM runs WHERE started_at >= ?", d7),
+            "total": one("SELECT COUNT(*) FROM runs"),
+            "last_at": one("SELECT MAX(started_at) FROM runs") or None,
+            "products_seen_d7": one(
+                "SELECT COALESCE(SUM(products_seen), 0) FROM runs WHERE started_at >= ?", d7),
+            "offers_matched_d7": one(
+                "SELECT COALESCE(SUM(offers_matched), 0) FROM runs WHERE started_at >= ?", d7),
+        }
+        posts = {
+            "h24": one("SELECT COUNT(*) FROM posts WHERE dry_run = 0 AND posted_at >= ?", h24),
+            "d7": one("SELECT COUNT(*) FROM posts WHERE dry_run = 0 AND posted_at >= ?", d7),
+            "total": one("SELECT COUNT(*) FROM posts WHERE dry_run = 0"),
+            "last_at": one("SELECT MAX(posted_at) FROM posts WHERE dry_run = 0") or None,
+            "by_target_d7": {
+                (r["target"] or "?"): r["n"] for r in self.conn.execute(
+                    """SELECT target, COUNT(*) n FROM posts
+                       WHERE dry_run = 0 AND posted_at >= ?
+                       GROUP BY target ORDER BY n DESC""", (d7,))},
+            "by_label_d7": {
+                (r["matched_label"] or "?"): r["n"] for r in self.conn.execute(
+                    """SELECT matched_label, COUNT(*) n FROM posts
+                       WHERE dry_run = 0 AND posted_at >= ?
+                       GROUP BY matched_label ORDER BY n DESC""", (d7,))},
+        }
+        return {
+            "ingests": ingests,
+            "posts": posts,
+            "recent_runs": self.recent_runs(recent),
+            "recent_posts": self.recent_posts(recent),
+        }
+
     def top_offers(self, limit: int = 20) -> list[dict[str, Any]]:
         """Latest snapshot per product, best discount first."""
         rows = self.conn.execute(
