@@ -64,8 +64,19 @@
       "term": "aire acondicionado",
       "label": "Aire acondicionado",
       "min_discount_pct": 20
+    },
+    {
+      "term": "proteina",
+      "label": "Proteína",
+      "min_discount_pct": 20
+    },
+    {
+      "term": "creatina",
+      "label": "Creatina",
+      "min_discount_pct": 15
     }
   ],
+  "categories": ["MLA3551"],
   "keyword_match_mode": "any_word",
   "global_exclude": [
     "funda",
