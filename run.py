@@ -206,6 +206,10 @@ def _parse_args() -> argparse.Namespace:
                       help="Search pages to scan when a keyword is given (default 2)")
     prom.add_argument("--min-discount", type=int, default=None, metavar="PCT",
                       help="Minimum discount to accept (overrides config)")
+    prom.add_argument("--index", type=int, default=1, metavar="N",
+                      help="Pick the Nth offer in the matching queue instead of "
+                           "the best one (1 = first/default). Matches the "
+                           "numbering `./run offers` shows.")
     _freshness_flags(prom)
 
     db = sub.add_parser("db", help="Run a read-only SQL query against the store")
@@ -1393,7 +1397,16 @@ def cmd_promote(args: argparse.Namespace, settings: Any) -> int:
             log_warn(hint)
             return 0
 
-        return _publish_one(deals[0], settings, store, target=target,
+        idx = args.index - 1
+        if idx < 0 or idx >= len(deals):
+            log_warn(f"--index {args.index} is out of range — only {len(deals)} "
+                     "offer(s) matched. Run `./run offers` to see the numbered list.")
+            return 0
+        if args.index > 1:
+            log_step(f"picking #{args.index} of {len(deals)} (skipping the "
+                     f"{args.index - 1} ahead of it)")
+
+        return _publish_one(deals[idx], settings, store, target=target,
                             dry_run=args.dry_run, use_llm=args.llm)
     finally:
         store.close()
