@@ -141,25 +141,34 @@ def _rounded_panel(size: tuple[int, int], radius: int, colour: tuple[int, int, i
 def compose_screenshot(
     shot_path: Path | str, out_path: Path | str, *, product: Any = None
 ) -> Path:
-    """Wrap the offer card in a thin white margin — nothing more.
+    """Trim the card's empty margins, then wrap it in a thin white border.
 
-    The element screenshot is already cropped tight to the card, so there's no
-    letterbox and no blur (both are gone): just a small even border on the
-    card's own white, so it reads as a clean framed card at its natural aspect.
-    Any trailing whitespace at the bottom is trimmed first.
+    The element screenshot ML hands back is padded two ways: a light-grey chrome
+    band above the product photo, and a tall empty strip below the last line of
+    text (the card reserves its grid row's full height, so hiding the buy-box
+    just leaves whitespace). A plain whitespace-trim can't remove either — the
+    card's 1px perimeter border touches all four edges, so getbbox against white
+    sees content edge to edge and trims nothing.
+
+    So trim by *content* instead. The border (~220) and the grey chrome (~245)
+    both sit above INK, so a getbbox over the pixels darker than INK lands on the
+    real content: product photo down to the last price/shipping line. Only the
+    vertical extent is cropped — the horizontal framing is already even — then a
+    small white margin is added so it reads as a clean framed card.
     """
-    from PIL import Image, ImageChops
+    from PIL import Image
 
     pad = 20
+    # Darker than the card's own border (~220) and its light-grey chrome (~245),
+    # so neither counts as content; comfortably above real ink (text, photo,
+    # the coloured discount/shipping pills all read well below this).
+    INK = 205
     shot = Image.open(shot_path).convert("RGB")
 
-    # Trim uniform border whitespace (the card element can include trailing
-    # white below its content) so the bottom margin isn't oversized.
-    bg = Image.new("RGB", shot.size, (255, 255, 255))
-    diff = ImageChops.difference(shot, bg)
-    box = diff.getbbox()
+    mask = shot.convert("L").point(lambda v: 255 if v < INK else 0)
+    box = mask.getbbox()
     if box:
-        shot = shot.crop(box)
+        shot = shot.crop((0, box[1], shot.width, box[3]))
 
     canvas = Image.new("RGB", (shot.width + 2 * pad, shot.height + 2 * pad), CARD_BG)
     canvas.paste(shot, (pad, pad))
