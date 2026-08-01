@@ -142,6 +142,13 @@ _DEFAULTS: dict[str, Any] = {
     "min_rating": 0.0,
     # Don't re-post the same product within this many days.
     "repost_cooldown_days": 21,
+    # Category diversity. When picking what to post next, demote any offer whose
+    # category (matched_label) appears in the last N real posts, so one category
+    # that dominates the discount ranking can't monopolise the feed. The best
+    # offer is still preferred *within* the categories not used in that window;
+    # only if every queued offer is a recently-used category does it fall back
+    # to plain best-discount-first. 0 disables (pure best-first).
+    "post_diversity_window": 3,
     # simulate/offers/post refuse to build tweets from data older than this,
     # since prices move and offers expire. Must exceed the gap between ingest
     # runs or posting stalls: with a daily ingest and hourly posting, the last

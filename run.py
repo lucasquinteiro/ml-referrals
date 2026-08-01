@@ -526,12 +526,33 @@ def _require_fresh_data(store: Any, settings: Any, args: argparse.Namespace) -> 
     return None
 
 
+def _diversify(deals: list[Any], recent_labels: list[str], window: int) -> list[Any]:
+    """Push offers whose category was used in the last `window` posts to the
+    back, so the head of the queue rotates categories instead of letting one
+    dominant category post over and over.
+
+    `deals` is already best-discount-first; both partitions preserve that, so
+    within "not recently used" the biggest discount still wins — diversity only
+    breaks ties across categories, it doesn't override deal quality inside one.
+    Falls back to the untouched queue when nothing but recent categories remain.
+    """
+    if window <= 0 or not deals:
+        return deals
+    recent = {lbl for lbl in recent_labels[:window] if lbl}
+    if not recent:
+        return deals
+    fresh = [d for d in deals if (d.matched_label or "") not in recent]
+    stale = [d for d in deals if (d.matched_label or "") in recent]
+    return fresh + stale
+
+
 def _select_deals(
     store: Any, settings: Any, *, min_discount: Optional[int] = None
 ) -> list[Any]:
     """The postable queue: keyword-matched, threshold-clearing, off cooldown.
 
-    Ordered best-discount-first, so the head of this list is always the next
+    Ordered best-discount-first and then rotated for category diversity
+    (`post_diversity_window`), so the head of this list is always the next
     thing that would go out.
     """
     import offers as off
@@ -539,9 +560,13 @@ def _select_deals(
     stored = store.latest_matched_products()
     matched = off.match_products(stored, off.load_keywords(settings), settings)
     cooldown = store.recently_posted(settings.repost_cooldown_days)
-    return off.filter_offers(
+    deals = off.filter_offers(
         matched, settings, exclude_ids=cooldown, min_discount_override=min_discount
     )
+    window = int(settings.get("post_diversity_window", 0) or 0)
+    if window:
+        deals = _diversify(deals, store.recently_posted_labels(window), window)
+    return deals
 
 
 def _resolve_links(

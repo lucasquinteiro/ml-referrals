@@ -410,7 +410,7 @@ flags are re-added from X's own error response and retried once.
 ## Running it unattended
 
 On an always-on box (a droplet), three systemd timers do everything — `ingest`
-(4×/day, search listings), `post` (every 3h), and `session-check` (2×/day). No
+(4×/day, search listings), `post` (5×/day), and `session-check` (2×/day). No
 GitHub Actions: a persistent server keeps the Mercado Libre session warm, holds
 the rate gate's state across runs, and gives ML one stable IP instead of a
 rotating datacenter one.

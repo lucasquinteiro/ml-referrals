@@ -9,7 +9,7 @@ Three systemd timers do the work:
 | Timer | Cadence | What runs | Touches ML |
 | --- | --- | --- | --- |
 | `ml-referrals-ingest` | 4×/day | `ingest --source search` | yes — throttled trickle |
-| `ml-referrals-post` | every 3h (8/day) | `post` | ≤2 gated requests |
+| `ml-referrals-post` | 5×/day | `post` | ≤2 gated requests |
 | `ml-referrals-session-check` | 2×/day | `session-check` | 1 per session |
 
 Everything ML-facing routes through the rate gate (`config.json` → `ml_gate`),

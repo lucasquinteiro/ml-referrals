@@ -301,6 +301,21 @@ class SupabaseStore:
         )
         return {r["product_id"] for r in (res.data or [])}
 
+    def recently_posted_labels(self, limit: int) -> list[str]:
+        """The category labels of the last `limit` real posts, most recent
+        first — the input to post-time category diversity."""
+        if limit <= 0:
+            return []
+        res = (
+            self.sb.table("mlr_posts")
+            .select("matched_label")
+            .eq("dry_run", False)
+            .order("posted_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [r.get("matched_label") for r in (res.data or [])]
+
     def record_post(
         self,
         *,

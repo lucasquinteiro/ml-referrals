@@ -17,7 +17,7 @@ bash deploy/push.sh root@your-droplet
 ```
 
 Three systemd timers then run it: `ingest` (4×/day, search listings), `post`
-(every 3h), `session-check` (2×/day). Everything that touches Mercado Libre goes
+(5×/day), `session-check` (2×/day). Everything that touches Mercado Libre goes
 through the rate gate, so nothing bursts.
 
 ## Why it stays safe
@@ -29,7 +29,7 @@ through the rate gate, so nothing bursts.
   a jittered minimum interval, per-account hourly/daily budgets, and a
   circuit-breaker cooldown on any wall — shared across every process.
 - **Post-time generation.** Each post mints its link and captures its card
-  lazily and cached, so a post is at most two metered ML requests, 3h apart.
+  lazily and cached, so a post is at most two metered ML requests, hours apart.
 
 ## Storage
 

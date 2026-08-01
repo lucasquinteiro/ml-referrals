@@ -378,6 +378,18 @@ class Store:
         ).fetchall()
         return {r["product_id"] for r in rows}
 
+    def recently_posted_labels(self, limit: int) -> list[str]:
+        """The category labels of the last `limit` real posts, most recent
+        first — the input to post-time category diversity."""
+        if limit <= 0:
+            return []
+        rows = self.conn.execute(
+            "SELECT matched_label FROM posts WHERE dry_run = 0 "
+            "ORDER BY posted_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [r["matched_label"] for r in rows]
+
     def record_post(
         self,
         *,

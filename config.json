@@ -74,6 +74,26 @@
       "term": "creatina",
       "label": "Creatina",
       "min_discount_pct": 15
+    },
+    {
+      "term": "pre entreno",
+      "label": "Pre-entreno",
+      "min_discount_pct": 15
+    },
+    {
+      "term": "aminoacidos",
+      "label": "Aminoácidos",
+      "min_discount_pct": 15
+    },
+    {
+      "term": "barrita proteica",
+      "label": "Barritas proteicas",
+      "min_discount_pct": 20
+    },
+    {
+      "term": "colageno",
+      "label": "Colágeno",
+      "min_discount_pct": 20
     }
   ],
   "categories": ["MLA3551"],
@@ -96,6 +116,7 @@
   "max_price": 0,
   "min_rating": 0.0,
   "repost_cooldown_days": 21,
+  "post_diversity_window": 3,
   "max_data_age_hours": 26,
   "affiliate": {
     "tag": "",
@@ -136,12 +157,12 @@
     "max_per_hour": {
       "anon": 120,
       "scraping": 40,
-      "affiliate": 0
+      "affiliate": 8
     },
     "max_per_day": {
       "anon": 800,
       "scraping": 200,
-      "affiliate": 0
+      "affiliate": 30
     },
     "cooldown_sec": 3600,
     "max_single_wait_sec": 900
