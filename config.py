@@ -142,6 +142,13 @@ _DEFAULTS: dict[str, Any] = {
     "min_rating": 0.0,
     # Don't re-post the same product within this many days.
     "repost_cooldown_days": 21,
+    # At ingest time, screenshot each threshold-clearing offer's /ofertas card
+    # right then — while it's guaranteed on the page — and cache it, so the post
+    # later just reuses that card instead of re-finding a product that may have
+    # rotated off /ofertas by post time (the old, failure-prone path). Capped
+    # per run so a big crawl doesn't turn into a long screenshot session.
+    "capture_cards_on_ingest": True,
+    "max_cards_per_ingest": 20,
     # Category diversity. When picking what to post next, demote any offer whose
     # category (matched_label) appears in the last N real posts, so one category
     # that dominates the discount ranking can't monopolise the feed. The best

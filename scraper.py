@@ -275,6 +275,11 @@ def scrape_offers_http(
             new = 0
             for product in batch:
                 if product.product_id not in seen:
+                    # Remember where this card was seen so a later card-capture
+                    # pass can reload the exact /ofertas page instead of hunting.
+                    product.extra["ofertas_page"] = n
+                    if category:
+                        product.extra["category"] = category
                     seen[product.product_id] = product
                     new += 1
             log_step(f"page{tag} {n}: {len(batch)} cards, {new} new")
@@ -352,12 +357,20 @@ class MercadoLibreScraper:
         delay_sec: float = 2.5,
         timeout_ms: int = 60_000,
         use_session: bool = True,
+        block_images: bool = True,
+        device_scale_factor: Optional[int] = None,
     ) -> None:
         self.site = site.rstrip("/")
         self.headless = headless
         self.delay_sec = delay_sec
         self.timeout_ms = timeout_ms
         self.use_session = use_session
+        # Blocking image bytes makes the data scrape ~3x lighter — the thumbnail
+        # URL is in the DOM either way. But capturing a card screenshot needs the
+        # photo actually painted, so the capture path constructs with
+        # block_images=False (and a device_scale_factor for a sharp grab).
+        self.block_images = block_images
+        self.device_scale_factor = device_scale_factor
         self.authenticated = False
         self._session = None
         self._ctx = None
@@ -371,18 +384,22 @@ class MercadoLibreScraper:
         # it, but search does. Anonymous is the default. BrowserSession picks a
         # persistent profile over a frozen snapshot automatically.
         role = auth.SCRAPING if self.use_session else None
+        ctx_kwargs: dict[str, Any] = {"viewport": {"width": 1440, "height": 1000}}
+        if self.device_scale_factor:
+            ctx_kwargs["device_scale_factor"] = self.device_scale_factor
         self._session = auth.BrowserSession(
-            role, headless=self.headless, user_agent=UA,
-            viewport={"width": 1440, "height": 1000},
+            role, headless=self.headless, user_agent=UA, **ctx_kwargs,
         )
         self._ctx = self._session.__enter__()
         self.authenticated = self._session.mode in ("profile", "snapshot")
-        # Images/fonts/media are pure bandwidth here — the thumbnail URL is in
-        # the DOM regardless of whether the bytes are fetched.
-        self._ctx.route(
-            re.compile(r"\.(png|jpe?g|webp|avif|gif|svg|woff2?|ttf|mp4)(\?|$)", re.I),
-            lambda route: route.abort(),
-        )
+        # Images/fonts/media are pure bandwidth for a data scrape — the thumbnail
+        # URL is in the DOM regardless. Left on only when we intend to screenshot
+        # cards, which needs the photo painted.
+        if self.block_images:
+            self._ctx.route(
+                re.compile(r"\.(png|jpe?g|webp|avif|gif|svg|woff2?|ttf|mp4)(\?|$)", re.I),
+                lambda route: route.abort(),
+            )
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -391,17 +408,28 @@ class MercadoLibreScraper:
 
     # ---- scraping --------------------------------------------------------
 
-    def _offers_url(self, page: int) -> str:
-        base = f"{self.site}/ofertas"
-        return base if page <= 1 else f"{base}?page={page}"
+    def _offers_url(self, page: int, category: Optional[str] = None) -> str:
+        return _offers_url(self.site, page, category)
 
-    def _scrape_page(self, page_no: int) -> list[Product]:
+    def _scrape_page(
+        self,
+        page_no: int,
+        category: Optional[str] = None,
+        *,
+        capture: Optional[Any] = None,
+        shots_dir: Optional[Path] = None,
+    ) -> list[Product]:
+        """Scrape one /ofertas page. When `capture` (a predicate) is given, each
+        product it accepts is ALSO screenshotted from this very page render —
+        the only reliable moment, since /ofertas reorders on every request, so
+        the card can't be re-found on a later load. The raw screenshot path is
+        stashed on `product.extra['card_path']`."""
         assert self._ctx is not None, "use the scraper as a context manager"
         pg = self._ctx.new_page()
         try:
             from lib import mlgate
 
-            url = self._offers_url(page_no)
+            url = self._offers_url(page_no, category)
             mlgate.wait(mlgate.ANON, label=f"ofertas p{page_no}")
             pg.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
             try:
@@ -420,10 +448,40 @@ class MercadoLibreScraper:
 
             raw = pg.evaluate(_EXTRACT_JS)
             products = [p for p in (_to_product(r) for r in raw) if p]
+            for p in products:
+                p.extra["ofertas_page"] = page_no
+                if category:
+                    p.extra["category"] = category
             log_step(f"page {page_no}: {len(products)} products")
+
+            if capture is not None and shots_dir is not None:
+                self._capture_cards_on_page(pg, products, capture, shots_dir)
             return products
         finally:
             pg.close()
+
+    def _capture_cards_on_page(
+        self, pg: Any, products: list[Product], capture: Any, shots_dir: Path,
+    ) -> None:
+        """Screenshot the cards `capture(product)` accepts, from the open page."""
+        import screenshot as shot
+
+        wanted = [p for p in products if capture(p)]
+        if not wanted:
+            return
+        try:
+            pg.add_style_tag(content=shot._HIDE_OVERLAYS_CSS)
+        except Exception:  # noqa: BLE001 - overlay hiding is best-effort
+            pass
+        for p in wanted:
+            try:
+                path = shot.capture_card_on_page(
+                    pg, p, shots_dir / f"{p.product_id}.png")
+                if path:
+                    p.extra["card_path"] = str(path)
+            except Exception as e:  # noqa: BLE001 - one card mustn't stop the scrape
+                log_warn(f"card capture failed for {p.product_id} "
+                         f"({type(e).__name__}: {e})")
 
     # ---- search (needs a logged-in session) ------------------------------
 
@@ -483,12 +541,26 @@ class MercadoLibreScraper:
                 time.sleep(self.delay_sec)
         return list(seen.values())
 
-    def scrape_offers(self, pages: int = 10) -> list[Product]:
-        """Crawl `pages` pages of /ofertas, de-duplicated by product id."""
+    def scrape_offers(
+        self,
+        pages: int = 10,
+        *,
+        category: Optional[str] = None,
+        capture: Optional[Any] = None,
+        shots_dir: Optional[Path] = None,
+    ) -> list[Product]:
+        """Crawl `pages` pages of /ofertas, de-duplicated by product id.
+
+        `category` restricts to one Mercado Libre category (server-side filter).
+        When `capture` (a `product -> bool` predicate) and `shots_dir` are given,
+        every accepted product's card is screenshotted from the page it's scraped
+        from — see `_scrape_page`.
+        """
         seen: dict[str, Product] = {}
         for n in range(1, pages + 1):
             try:
-                batch = self._scrape_page(n)
+                batch = self._scrape_page(
+                    n, category, capture=capture, shots_dir=shots_dir)
             except BlockedError:
                 raise
             except Exception as e:  # noqa: BLE001 - one bad page shouldn't kill the run

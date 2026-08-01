@@ -181,6 +181,51 @@ def capture_product_page(
         return None
 
 
+def capture_card_on_page(
+    page: Any, product: Any, out_path: Path | str, *, settle_ms: int = 1500,
+) -> Optional[Path]:
+    """Screenshot just `product`'s card on an already-loaded listing page.
+
+    The page must already be navigated to an /ofertas (or search) listing whose
+    cards have rendered (and, ideally, overlays hidden via _HIDE_OVERLAYS_CSS).
+    This only locates the one card whose title href carries the product id and
+    screenshots that element — nothing else on the page. Returns the path, or
+    None when the card isn't present on this page.
+
+    Isolated so both the post-time capture (which navigates, then calls this)
+    and the ingest-time batch capture (which loads a page once and calls this
+    for every wanted card on it) share the exact same "keep only our card" grab.
+    """
+    pid = product.product_id.upper()
+    # The stored id is normalised (MLA69985783); hrefs may carry MLA-69985783.
+    loose = re.compile(re.escape(pid[:3]) + r"-?" + re.escape(pid[3:]), re.I)
+
+    index = page.evaluate(
+        """([sel, titleSel, pattern]) => {
+            const re = new RegExp(pattern, 'i');
+            const cards = document.querySelectorAll(sel);
+            for (let i = 0; i < cards.length; i++) {
+                const a = cards[i].querySelector(titleSel);
+                if (a && re.test(a.href)) return i;
+            }
+            return -1;
+        }""",
+        [CARD_SELECTOR, TITLE_SELECTOR, loose.pattern],
+    )
+    if index is None or index < 0:
+        return None
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    card = page.locator(CARD_SELECTOR).nth(index)
+    # Images are lazy-loaded; the card must be on screen and settled or the
+    # screenshot catches an empty photo area.
+    card.scroll_into_view_if_needed()
+    page.wait_for_timeout(settle_ms)
+    card.screenshot(path=str(out_path))
+    return out_path
+
+
 def capture_offer_card(
     product: Any,
     out_path: Path | str,
@@ -221,9 +266,7 @@ def capture_offer_card(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # The stored id is normalised (MLA69985783); hrefs may carry MLA-69985783.
     pid = product.product_id.upper()
-    loose = re.compile(re.escape(pid[:3]) + r"-?" + re.escape(pid[3:]), re.I)
 
     # Try the page it was scraped from first — usually a single load.
     order = list(range(1, max_pages + 1))
@@ -291,27 +334,9 @@ def capture_offer_card(
                                  f"({type(e).__name__}); trying next")
                         continue
 
-                    index = page.evaluate(
-                        """([sel, titleSel, pattern]) => {
-                            const re = new RegExp(pattern, 'i');
-                            const cards = document.querySelectorAll(sel);
-                            for (let i = 0; i < cards.length; i++) {
-                                const a = cards[i].querySelector(titleSel);
-                                if (a && re.test(a.href)) return i;
-                            }
-                            return -1;
-                        }""",
-                        [CARD_SELECTOR, TITLE_SELECTOR, loose.pattern],
-                    )
-                    if index is None or index < 0:
+                    if capture_card_on_page(page, product, out_path) is None:
                         continue
 
-                    card = page.locator(CARD_SELECTOR).nth(index)
-                    # Images are lazy-loaded; the card must be on screen and
-                    # settled or the screenshot catches an empty photo area.
-                    card.scroll_into_view_if_needed()
-                    page.wait_for_timeout(1500)
-                    card.screenshot(path=str(out_path))
                     where = (f"search '{term}'" if source == "search"
                              else f"/ofertas{f'?category={cat}' if cat else ''}")
                     log_step(f"captured offer card from {where} page {page_no}")

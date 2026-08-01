@@ -73,6 +73,12 @@ def _parse_args() -> argparse.Namespace:
                           "for testing a single category from the console.")
     ing.add_argument("--no-slack", action="store_true",
                      help="Skip the Slack summary even if SLACK_WEBHOOK_URL is set")
+    ing.add_argument("--no-capture-cards", action="store_true",
+                     help="Skip screenshotting each keeper's /ofertas card at "
+                          "ingest time (the cached card the post later uses)")
+    ing.add_argument("--capture-limit", type=int, default=None, metavar="N",
+                     help="Max offer cards to screenshot this run "
+                          "(default: config max_cards_per_ingest)")
     ing.add_argument("--start-page", type=int, default=1, metavar="N",
                      help="First /ofertas page to crawl. Split a big crawl "
                           "across several runs instead of one burst.")
@@ -277,12 +283,18 @@ def _norm_categories(categories) -> list[dict]:
 def _scrape_and_match(
     settings: Any, *, pages: int, headed: bool, keyword_overrides=None,
     source: str = "ofertas", start_page: int = 1, categories=None,
+    capture_cards: bool = False, capture_limit: int = 20,
 ):
     """Shared by `ingest` and `post --ingest`. Returns (all_products, matched).
 
     When `categories` is given (and source is the default /ofertas HTTP path),
     each category's offers are crawled in turn and merged, rather than the
     general /ofertas page — a server-side filter for better category coverage.
+
+    With `capture_cards`, the /ofertas source runs through the browser instead
+    of HTTP so each keeper's card can be screenshotted from the same page render
+    it's scraped from — /ofertas reorders per request, so that's the only
+    reliable moment. Up to `capture_limit` cards are captured (page order).
     """
     import auth
     from lib.log import log_ok, log_stage, log_step
@@ -321,6 +333,14 @@ def _scrape_and_match(
             delay_sec=settings.delay_between_pages_sec,
         ) as scraper:
             products = scraper.scrape_offers(pages=pages)
+    elif capture_cards:
+        # Screenshot each keeper's card inline, from the same page render it was
+        # scraped from — /ofertas reorders per request, so a later reload can't
+        # re-find it. Needs the browser (with images painted), not the HTTP path.
+        products = _scrape_offers_with_capture(
+            settings, keywords, pages=pages,
+            cats=_norm_categories(categories), capture_limit=capture_limit,
+        )
     else:
         # /ofertas is server-rendered, so no browser is needed — ~3x faster and
         # it lets the CI job skip installing Chromium entirely.
@@ -454,10 +474,21 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
     pages = args.pages or settings.pages_per_run
     # --category (repeatable) overrides config.categories; either can be empty.
     categories = args.category if args.category else settings.get("categories")
+
+    # Screenshot each keeper's /ofertas card inline during the scrape (the only
+    # reliable moment — /ofertas reorders per request). Only for the anonymous
+    # /ofertas source; search products aren't on that page.
+    capture_cards = (args.source == "ofertas" and not args.headed
+                     and not args.no_capture_cards
+                     and settings.get("capture_cards_on_ingest", True))
+    capture_limit = (args.capture_limit if args.capture_limit is not None
+                     else int(settings.get("max_cards_per_ingest", 20) or 20))
+
     products, matched = _scrape_and_match(
         settings, pages=pages, headed=args.headed,
         keyword_overrides=args.keyword, source=args.source,
         start_page=args.start_page, categories=categories,
+        capture_cards=capture_cards, capture_limit=capture_limit,
     )
 
     deals = off.filter_offers(matched, settings)
@@ -477,6 +508,11 @@ def cmd_ingest(args: argparse.Namespace, settings: Any) -> int:
         n = store.record_snapshots(to_store, run_id)
         store.finish_run(run_id, products_seen=len(products), offers_matched=len(matched))
         log_ok(f"recorded {n} snapshots (run #{run_id})")
+
+        # Cards were screenshotted inline during the scrape (extra['card_path']);
+        # compose + upload + cache them now so posting reuses them directly.
+        if capture_cards:
+            _store_captured_cards(matched, settings, store)
 
         # Queue depth reflects everything stored, not just this run's haul.
         queue_total = len(_select_deals(store, settings))
@@ -566,7 +602,27 @@ def _select_deals(
     window = int(settings.get("post_diversity_window", 0) or 0)
     if window:
         deals = _diversify(deals, store.recently_posted_labels(window), window)
+    deals = _prefer_cached_cards(deals, store)
     return deals
+
+
+def _prefer_cached_cards(deals: list[Any], store: Any) -> list[Any]:
+    """Float offers whose /ofertas card is already cached to the front.
+
+    Cards are captured at ingest time; an offer without one would force the
+    unreliable post-time re-find and, on a miss, be withheld from X entirely.
+    Preferring a carded offer keeps posting flowing on a real card. Stable, so
+    best-discount (and diversity) order is preserved within each group, and it's
+    a no-op once ingest captures the whole queue.
+    """
+    if len(deals) < 2:
+        return deals
+    have = set(store.get_offer_images([d.product_id for d in deals]))
+    if not have or len(have) >= len(deals):
+        return deals
+    carded = [d for d in deals if d.product_id in have]
+    rest = [d for d in deals if d.product_id not in have]
+    return carded + rest
 
 
 def _resolve_links(
@@ -651,6 +707,96 @@ def _render(product: Any, link: str, settings: Any, *, use_llm: bool) -> str:
     import tweets as tw
 
     return tw.build_tweet(product, link, settings, deterministic=not use_llm)
+
+
+def _make_keep_predicate(keywords: list[Any], settings: Any, limit: int):
+    """A `product -> bool` for inline card capture: accept a product if it
+    matches a keyword AND clears the deal thresholds, up to `limit` distinct
+    products. match_products tags the product (keyword/label) as a side effect,
+    which is exactly what the later compose step wants."""
+    import offers as off
+
+    picked: set[str] = set()
+
+    def keep(p: Any) -> bool:
+        if len(picked) >= limit or p.product_id in picked:
+            return False
+        matched = off.match_products([p], keywords, settings)
+        if not matched or not off.filter_offers(matched, settings):
+            return False
+        picked.add(p.product_id)
+        return True
+
+    return keep
+
+
+def _scrape_offers_with_capture(
+    settings: Any, keywords: list[Any], *, pages: int, cats: list[dict],
+    capture_limit: int,
+) -> list[Any]:
+    """Browser /ofertas scrape that screenshots each keeper's card inline.
+
+    Anonymous (no burner session — a logged-in header would bake the account
+    holder's name into the shot), images enabled and captured at SCALE for a
+    sharp grab. Each category is crawled in turn and merged.
+    """
+    from lib.log import log_step
+    import screenshot as shot
+    from scraper import MercadoLibreScraper
+
+    shots = cfg.STATE_DIR / "shots"
+    keep = _make_keep_predicate(keywords, settings, capture_limit)
+    targets = [c["id"] for c in cats] if cats else [None]
+    if cats:
+        log_step("capturing cards while crawling: "
+                 + ", ".join(c["label"] for c in cats))
+
+    seen: dict[str, Any] = {}
+    with MercadoLibreScraper(
+        settings.site, headless=True, use_session=False,
+        block_images=False, device_scale_factor=shot.SCALE,
+        delay_sec=settings.delay_between_pages_sec,
+    ) as scraper:
+        for cat in targets:
+            batch = scraper.scrape_offers(
+                pages, category=cat, capture=keep, shots_dir=shots)
+            for pr in batch:
+                seen.setdefault(pr.product_id, pr)
+    return list(seen.values())
+
+
+def _store_captured_cards(products: list[Any], settings: Any, store: Any) -> int:
+    """Compose, upload and cache every card captured inline during the scrape
+    (those carrying extra['card_path']). Returns how many were cached."""
+    import card as card_mod
+    from lib.log import log_stage, log_step, log_warn
+
+    shots = cfg.STATE_DIR / "shots"
+    picks = [p for p in products if p.extra.get("card_path")]
+    if not picks:
+        return 0
+
+    log_stage(f"Caching {len(picks)} captured offer card(s)")
+    n = 0
+    for p in picks:
+        try:
+            composed = card_mod.compose_screenshot(
+                p.extra["card_path"], shots / f"{p.product_id}-card.png", product=p)
+            try:
+                url = store.upload_image(p.product_id, composed)
+            except RuntimeError as e:
+                log_warn(str(e))
+                url = None
+            ref = url or str(composed)
+            store.save_offer_image(
+                product_id=p.product_id, url=ref, local_path=str(composed))
+            n += 1
+            log_step(f"cached {p.matched_label}: {p.title[:48]}")
+        except Exception as e:  # noqa: BLE001 - one card mustn't stop the rest
+            log_warn(f"failed to cache card for {p.product_id} "
+                     f"({type(e).__name__}: {e})")
+    log_step(f"cached {n}/{len(picks)} card(s)")
+    return n
 
 
 def _capture_offer_image(
