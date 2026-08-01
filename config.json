@@ -125,12 +125,12 @@
     "max_per_hour": {
       "anon": 120,
       "scraping": 40,
-      "affiliate": 8
+      "affiliate": 0
     },
     "max_per_day": {
       "anon": 800,
       "scraping": 200,
-      "affiliate": 30
+      "affiliate": 0
     },
     "cooldown_sec": 3600,
     "max_single_wait_sec": 900
