@@ -801,7 +801,12 @@ def _capture_pdp_image(product: Any, settings: Any, store: Any = None):
 
 
 def _resolve_image(product: Any, settings: Any, store: Any = None):
-    """Pick the picture for a tweet. Returns (image_url, local_path).
+    """Pick the picture for a tweet. Returns (image_url, local_path, ok).
+
+    `ok` is False only when a screenshot-type mode (screenshot/pdp/card) could
+    NOT produce its image and has fallen back to the bare product photo. For
+    "product"/"none" (and any unknown mode) there is no screenshot to miss, so
+    `ok` is True. Callers posting to X use it to refuse a bare-photo fallback.
 
     "screenshot" the compact ML offer card (poly-card: photo, title, discount
                  pill, price) via _capture_offer_image — anonymous /ofertas
@@ -822,7 +827,7 @@ def _resolve_image(product: Any, settings: Any, store: Any = None):
 
     mode = settings.get("tweet_image_mode", "screenshot")
     if mode == "none":
-        return None, None
+        return None, None, True
 
     def _as_pair(ref: str):
         return (ref, None) if ref.startswith("http") else (None, ref)
@@ -832,25 +837,29 @@ def _resolve_image(product: Any, settings: Any, store: Any = None):
         stored = store.get_offer_images([product.product_id]).get(product.product_id)
         if stored and (stored.startswith("http") or Path(stored).is_file()):
             log_step("using the stored offer image")
-            return _as_pair(stored)
+            return (*_as_pair(stored), True)
 
     if mode == "screenshot":
         ref = _capture_offer_image(product, settings, store)
         if ref:
-            return _as_pair(ref)
+            return (*_as_pair(ref), True)
         log_step("no offer-card screenshot — using the product photo")
     elif mode == "pdp":
         ref = _capture_pdp_image(product, settings, store)
         if ref:
-            return _as_pair(ref)
+            return (*_as_pair(ref), True)
         log_step("no product-page screenshot — using the product photo")
     elif mode == "card":
         ref = _render_card_image(product, settings, store)
         if ref:
-            return _as_pair(ref)
+            return (*_as_pair(ref), True)
         log_step("card render unavailable — using the product photo")
 
-    return (product.image or None), None
+    # A screenshot-type mode that reaches here has no image and is degrading to
+    # the bare product photo — report ok=False so a real X post can refuse it.
+    # "product"/unknown modes have no screenshot to miss, so ok stays True.
+    ok = mode not in ("screenshot", "pdp", "card")
+    return (product.image or None), None, ok
 
 
 def _show(product: Any, link: str, text: str, header: str, *, source: bool = False) -> None:
@@ -936,7 +945,7 @@ def cmd_simulate(args: argparse.Namespace, settings: Any) -> int:
             log_stage("Producing the post image")
             mode = settings.get("tweet_image_mode", "screenshot")
             # store=None keeps simulate read-only: capture/render locally, no upload.
-            image_url, image_path = _resolve_image(deals[0], settings, store=None)
+            image_url, image_path, _ = _resolve_image(deals[0], settings, store=None)
             ref = image_url or image_path
             if ref:
                 log_ok(f"image ready ({mode}): {ref}")
@@ -1243,6 +1252,26 @@ def cmd_db(args: argparse.Namespace, settings: Any) -> int:
     return 0
 
 
+def _alert_missing_screenshot(product: Any, settings: Any, mode: str) -> None:
+    """Slack the fact that a post was withheld because its screenshot failed.
+
+    The offer isn't recorded as posted, so it stays in the queue and the next
+    run retries — screenshot misses are usually transient (a walled search
+    fallback, a card that briefly dropped off /ofertas)."""
+    import notifier
+
+    disc = f"{product.discount_pct}% OFF · " if product.discount_pct else ""
+    notifier.notify(
+        f"⚠️ *ml-referrals — post skipped (no {mode} image)*\n"
+        f"Did not post to X: the offer-card screenshot couldn't be generated, "
+        f"and posting a bare product photo is disabled.\n"
+        f"• {disc}{product.title[:90]}\n"
+        f"   {product.url}\n"
+        f"_Left queued — the next run retries. If it keeps failing, check the "
+        f"affiliate session / `./run simulate --image`._"
+    )
+
+
 def _publish_one(
     product: Any, settings: Any, store: Any, *,
     target: str, dry_run: bool = False, use_llm: bool = False,
@@ -1275,7 +1304,19 @@ def _publish_one(
     _show(product, link, text, "DRY RUN" if dry_run else f"POSTING → {target.upper()}")
 
     print()
-    image_url, image_path = _resolve_image(product, settings, store)
+    image_url, image_path, image_ok = _resolve_image(product, settings, store)
+
+    # A screenshot-type image mode that couldn't produce its image degrades to
+    # the bare product photo. That's fine for the Slack simulator (you want to
+    # SEE that it fell back), but a real X post must NOT go out photo-only —
+    # skip it and alert on Slack instead, so the offer stays queued for a retry.
+    if (not image_ok and not dry_run
+            and target in ("twitter_api", "twitter", "twitter_cookie")):
+        mode = settings.get("tweet_image_mode", "screenshot")
+        log_err(f"No {mode} image was generated — not posting to X "
+                "(a bare product photo is not allowed). Alerting on Slack.")
+        _alert_missing_screenshot(product, settings, mode)
+        return 0
 
     if target == "slack":
         tweet_id = None
