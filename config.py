@@ -199,9 +199,13 @@ _DEFAULTS: dict[str, Any] = {
     # running log of what actually went out.
     "mirror_to_slack": True,
     # What picture to attach:
-    #   "screenshot" ML's real product page (desktop hero: gallery + price block
+    #   "screenshot" the compact ML offer card (poly-card: photo, title,
+    #                discount pill, price) — anonymous /ofertas (+ configured
+    #                categories), no session at all, tight crop. The default.
+    #   "pdp"        ML's real product page (desktop hero: gallery + price block
     #                + cuotas), captured with the affiliate session — one gentle
-    #                load per post. The authentic look; the default.
+    #                load per post. More ML chrome, but padded and session-
+    #                dependent.
     #   "card"       an ML-style card composed from data (card_html) — never
     #                walls, but not pixel-identical to ML, so off by default.
     #   "product"    the product photo, uploaded natively (no browser)

@@ -653,6 +653,10 @@ def _capture_offer_image(
         raw = shot_mod.capture_offer_card(
             product, shots / f"{product.product_id}.png",
             site=settings.site, source=source, search_term=term, max_pages=3,
+            # The product may have come from a category-filtered ingest, so a
+            # niche category's card can miss the plain /ofertas top pages —
+            # try the configured categories too, not just the generic pool.
+            categories=settings.get("categories"),
         )
         if raw:
             break
@@ -662,6 +666,9 @@ def _capture_offer_image(
     composed = card_mod.compose_screenshot(
         raw, shots / f"{product.product_id}-card.png", product=product
     )
+    if store is None:
+        return str(composed)
+
     # On Supabase, push the PNG to Storage so any machine can fetch it; on
     # SQLite the local path is the reference (the droplet reads its own disk).
     try:
@@ -744,14 +751,18 @@ def _capture_pdp_image(product: Any, settings: Any, store: Any = None):
 def _resolve_image(product: Any, settings: Any, store: Any = None):
     """Pick the picture for a tweet. Returns (image_url, local_path).
 
-    "screenshot" captures ML's real product page (the desktop hero) with the
-                 affiliate session — one gentle load per post. The default: it's
-                 the authentic look, ML's own price block and cuotas.
+    "screenshot" the compact ML offer card (poly-card: photo, title, discount
+                 pill, price) via _capture_offer_image — anonymous /ofertas
+                 (+ configured categories), no session at all. Tight crop, no
+                 padding. The default.
+    "pdp"        ML's real product page (the desktop hero: gallery + price
+                 block + cuotas), via the affiliate session — one gentle load
+                 per post. More ML chrome, but padded and session-dependent.
     "card"       composes an ML-style card from data alone (card_html) — never
                  walls, but not pixel-identical to ML, so off by default.
     "product"    the bare product photo.
     Every mode degrades to the bare product photo when its image can't be
-    produced — a screenshot that walls never posts the synthetic card.
+    produced — a screenshot that fails never posts the synthetic card.
     """
     from lib.log import log_step
 
@@ -770,6 +781,11 @@ def _resolve_image(product: Any, settings: Any, store: Any = None):
             return _as_pair(stored)
 
     if mode == "screenshot":
+        ref = _capture_offer_image(product, settings, store)
+        if ref:
+            return _as_pair(ref)
+        log_step("no offer-card screenshot — using the product photo")
+    elif mode == "pdp":
         ref = _capture_pdp_image(product, settings, store)
         if ref:
             return _as_pair(ref)
