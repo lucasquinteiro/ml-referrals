@@ -12,7 +12,13 @@ EnvironmentFile=/opt/ml-referrals/.env
 # The longevity instrument: reopens each session, hits a login-only page, and
 # Slacks the moment one is found dead — your signal to re-login (and to weigh
 # `./run login --persist`). Exits non-zero on a dead session.
-ExecStart=/opt/ml-referrals/.venv/bin/python run.py session-check
+#
+# Scoped to `affiliate` only: scheduled posting needs that session, but the
+# `scraping` session is unused while the keyword-`search` ingest is paused (it
+# runs on anonymous /ofertas). The scraping probe kept bouncing to ML's
+# intermittent account-verification wall and paging Slack about a session
+# nothing depends on. Drop `--role affiliate` again if you re-enable search.
+ExecStart=/opt/ml-referrals/.venv/bin/python run.py session-check --role affiliate
 TimeoutStartSec=600
 
 [Install]

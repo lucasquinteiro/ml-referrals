@@ -1,5 +1,5 @@
 [Unit]
-Description=ml-referrals — scrape Mercado Libre search listings, snapshot prices
+Description=ml-referrals — scrape Mercado Libre /ofertas listings, snapshot prices
 OnFailure=ml-referrals-failure@%n.service
 After=network-online.target
 Wants=network-online.target
@@ -9,10 +9,10 @@ Type=oneshot
 User=mlref
 WorkingDirectory=/opt/ml-referrals
 EnvironmentFile=/opt/ml-referrals/.env
-# Search covers the whole catalogue, not just what ML flags as offers. Every
-# page load is throttled by the rate gate, so a full run is a slow trickle, not
-# a burst — give it room to finish.
-ExecStart=/opt/ml-referrals/.venv/bin/python run.py ingest --source search --pages 2
+# /ofertas only: anonymous, no login wall, and keywords still filter the haul.
+# The keyword-`search` source is paused — it sits behind an intermittent ML
+# account-verification interstitial that failed the whole job and paged Slack.
+ExecStart=/opt/ml-referrals/.venv/bin/python run.py ingest --source ofertas --pages 2
 TimeoutStartSec=3600
 Nice=10
 
