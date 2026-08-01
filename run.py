@@ -185,8 +185,17 @@ def _parse_args() -> argparse.Namespace:
         help="Manually promote one offer — --simulate to Slack, --post to X",
     )
     prom.add_argument("keyword", nargs="?", default=None,
-                      help="Fetch a fresh offer for this keyword (live search). "
-                           "Omit to use the best offer already in the queue.")
+                      help="Fetch a FRESH offer for this keyword via a live "
+                           "search scrape — needs `./run login --role scraping` "
+                           "(the burner) and hits the login wall risk that "
+                           "comes with it. Omit this; use --label instead "
+                           "unless you specifically need a live re-scrape.")
+    prom.add_argument("--label", default=None, metavar="LABEL",
+                      help="Promote the best offer already in the queue whose "
+                           "matched_label matches (case-insensitive substring, "
+                           "e.g. --label creatina or --label proteina). Filters "
+                           "the already-ingested store only — no live scraping, "
+                           "no session needed. Use `./run offers` to see labels.")
     mode = prom.add_mutually_exclusive_group()
     mode.add_argument("--simulate", action="store_true",
                       help="Send to Slack (the default)")
@@ -1366,11 +1375,22 @@ def cmd_promote(args: argparse.Namespace, settings: Any) -> int:
             deals = _select_deals(store, settings)
             if args.min_discount is not None:
                 deals = [p for p in deals if (p.discount_pct or 0) >= args.min_discount]
+            if args.label:
+                # normalize() (accent-stripping, lowercasing) matches how
+                # offers.py itself compares terms — "proteina" must still hit
+                # a label stored as "Proteína".
+                needle = off.normalize(args.label)
+                deals = [p for p in deals if needle in off.normalize(p.matched_label or "")]
 
         log_stage(f"{len(deals)} matching offer(s)")
         if not deals:
-            log_warn("No fresh offer cleared the thresholds. Try --min-discount "
-                     "lower, or a different keyword.")
+            hint = (f"Nothing in the queue matched --label '{args.label}'. Check "
+                    "the label spelling with `./run offers`, or run `./run ingest` "
+                    "first if the category hasn't been scraped yet."
+                    if args.label else
+                    "No fresh offer cleared the thresholds. Try --min-discount "
+                    "lower, or a different keyword.")
+            log_warn(hint)
             return 0
 
         return _publish_one(deals[0], settings, store, target=target,
