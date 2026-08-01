@@ -621,10 +621,21 @@ def _capture_offer_image(
     """Capture the compact Mercado Libre offer card, cache it, and return its
     stored reference (a URL or local path), or None.
 
-    The mobile-style card — product photo, title, discount pill, price. Found by
-    searching the product's own keyword first (it lands on the first page or
-    two), then /ofertas as a fallback. Page scans are capped low so a miss can
-    never run long — that unbounded 12-page scan was what timed the post out.
+    The mobile-style card — product photo, title, discount pill, price.
+
+    The burner (scraping) session is NEVER used here — the whole reason for the
+    category-aware /ofertas capture is to need no session at all. Primary
+    attempt is always the anonymous /ofertas (+ configured categories) scan.
+    Only if that can't relocate the card does it fall back to a keyword search,
+    and that fallback uses the AFFILIATE session, never the burner — by request,
+    since burner search pages are what kept tripping the login-wall / visual-
+    verification wall this project exists to avoid.
+
+    Be aware: the search fallback still puts *a* login-wall risk on the
+    affiliate account (the one your commissions depend on), just not the
+    burner's. It's opt-in-by-necessity (last resort only) to keep that
+    exposure rare, not eliminate it — the anonymous path is what should carry
+    the vast majority of captures.
     """
     import auth
     import card as card_mod
@@ -633,26 +644,29 @@ def _capture_offer_image(
     import screenshot as shot_mod
 
     shots = cfg.STATE_DIR / "shots"
-    # Search by the product's keyword first — it was scraped from that search,
-    # so it's near the top. Falls back to /ofertas (anonymous).
-    #
-    # But skip search when the scraping account is in a gate cooldown (its
-    # session got walled): waiting it out would block the whole post for up to
-    # the service timeout. Better to fall straight to /ofertas, then the product
-    # photo — a post never hangs on a dead burner session.
-    scraping_paused = mlgate.status(mlgate.SCRAPING)["cooldown_remaining_sec"] > 0
-    attempts: list[tuple[str, str]] = []
-    if auth.has_session(auth.SCRAPING) and product.matched_keyword and not scraping_paused:
-        attempts.append(("search", product.matched_keyword))
-    elif scraping_paused:
-        log_step("scraping paused (session walled) — skipping the search card")
-    attempts.append(("ofertas", ""))
+
+    # Widened vs. the old 3-page cap: ingest can crawl much deeper (up to
+    # pages_per_run, or a full category), so a shallow rescan was missing
+    # products that were genuinely on /ofertas, just past page 3.
+    anon_max_pages = min(int(settings.get("pages_per_run", 12) or 12), 8)
+
+    attempts: list[dict[str, Any]] = [
+        {"source": "ofertas", "term": "", "max_pages": anon_max_pages, "role": None},
+    ]
+
+    affiliate_paused = mlgate.status(mlgate.AFFILIATE)["cooldown_remaining_sec"] > 0
+    if auth.has_session(auth.AFFILIATE) and product.matched_keyword and not affiliate_paused:
+        attempts.append({"source": "search", "term": product.matched_keyword,
+                         "max_pages": 2, "role": auth.AFFILIATE})
+    elif affiliate_paused:
+        log_step("affiliate session paused (walled) — skipping the search fallback")
 
     raw = None
-    for source, term in attempts:
+    for a in attempts:
         raw = shot_mod.capture_offer_card(
             product, shots / f"{product.product_id}.png",
-            site=settings.site, source=source, search_term=term, max_pages=3,
+            site=settings.site, source=a["source"], search_term=a["term"],
+            max_pages=a["max_pages"], session_role=a["role"],
             # The product may have come from a category-filtered ingest, so a
             # niche category's card can miss the plain /ofertas top pages —
             # try the configured categories too, not just the generic pool.
@@ -753,8 +767,10 @@ def _resolve_image(product: Any, settings: Any, store: Any = None):
 
     "screenshot" the compact ML offer card (poly-card: photo, title, discount
                  pill, price) via _capture_offer_image — anonymous /ofertas
-                 (+ configured categories), no session at all. Tight crop, no
-                 padding. The default.
+                 (+ configured categories) first, no session at all; only on a
+                 miss does it fall back to a keyword search via the AFFILIATE
+                 session (never the burner) as a rare last resort. Tight crop,
+                 no padding. The default.
     "pdp"        ML's real product page (the desktop hero: gallery + price
                  block + cuotas), via the affiliate session — one gentle load
                  per post. More ML chrome, but padded and session-dependent.

@@ -192,6 +192,7 @@ def capture_offer_card(
     source: str = "ofertas",
     search_term: str = "",
     categories: Optional[list[str]] = None,
+    session_role: Optional[str] = None,
 ) -> Optional[Path]:
     """Screenshot `product`'s card. Returns None when it can't be found.
 
@@ -206,8 +207,11 @@ def capture_offer_card(
                  guaranteed to be near the front of the category it came from.
       "search"   the keyword listings, which is where products ML doesn't
                  surface as "offers" live. Behind the login wall, so this needs
-                 the scraping session and should be done in the same sitting as
-                 a search ingest rather than as a separate visit.
+                 a logged-in session — `session_role` picks which one (default
+                 `auth.SCRAPING`, the burner). Callers that want to keep the
+                 burner out of the image path entirely should pass
+                 `session_role=auth.AFFILIATE` explicitly and treat it as a
+                 last resort, not the default path.
 
     Not finding a product is normal, not an error: /ofertas rotates, and search
     results reshuffle.
@@ -235,10 +239,13 @@ def capture_offer_card(
     import auth
 
     # Search listings are behind the login wall; /ofertas is not, and stays
-    # anonymous so nothing is rate-limited against an account.
-    role = auth.SCRAPING if source == "search" else None
-    if source == "search" and not auth.has_session(auth.SCRAPING):
-        log_warn("screenshot: search source needs `./run login --role scraping`")
+    # anonymous so nothing is rate-limited against an account. The role behind
+    # "search" is caller-chosen (session_role), defaulting to the burner only
+    # for backward compatibility — callers that care which account takes the
+    # risk should always pass session_role explicitly.
+    role = (session_role or auth.SCRAPING) if source == "search" else None
+    if source == "search" and not auth.has_session(role):
+        log_warn(f"screenshot: search source needs `./run login --role {role}`")
         return None
 
     # Candidate category filters to try, in order: no filter first (fastest
@@ -259,7 +266,10 @@ def capture_offer_card(
 
             from lib import mlgate
 
-            gate_account = mlgate.SCRAPING if source == "search" else mlgate.ANON
+            # auth's role constants ("scraping"/"affiliate") are the same
+            # strings mlgate's account constants use, so the resolved role
+            # doubles as the gate account directly.
+            gate_account = role if source == "search" else mlgate.ANON
 
             for cat in cat_attempts:
                 for page_no in order:
@@ -271,8 +281,8 @@ def capture_offer_card(
                         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                         if any(m in page.url for m in _WALL_MARKERS):
                             mlgate.trip(gate_account, f"{source} wall")
-                            log_warn("screenshot: hit the login wall — the scraping "
-                                     "session has expired; re-run `./run login --role scraping`")
+                            log_warn(f"screenshot: hit the login wall — the {gate_account} "
+                                     f"session has expired; re-run `./run login --role {gate_account}`")
                             return None
                         page.wait_for_selector(CARD_SELECTOR, timeout=25_000)
                         page.add_style_tag(content=_HIDE_OVERLAYS_CSS)
