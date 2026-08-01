@@ -23,13 +23,14 @@ LINK_WEIGHT = 23  # X's t.co length, counted for any URL
 # The house format (Shark Deals):
 #
 #   ¡Bajó 60%! 🔥 AHORA $799.999 🤑🤑🤑
-#
+#   https://meli.la/2UE9UV9
 #   Tv Philco 58 Pulgadas Android Tv 4k 220V · antes $1.999.999 🦈🦈🦈
 #
-#   <link>
-#
-# The link goes top or bottom per settings.link_position (default "bottom" —
-# lead with the hook, link as the closing CTA next to the screenshot).
+# NO blank lines, and the link sits on line 2 (or line 1, with link_position:
+# "top") — never at the bottom. This is production-critical: a tall,
+# blank-line-heavy tweet gets folded under X's "Show more", hiding the
+# affiliate link from the timeline entirely (no clicks, no commission). The
+# hook + link must land inside the first couple of lines every time.
 
 _SYSTEM = (
     "Sos un curador de ofertas argentino que publica en X/Twitter. Escribís "
@@ -70,21 +71,31 @@ def _tail(settings: Any) -> str:
     return "\n\n" + " · ".join(bits) if bits else ""
 
 
-def _place_link(body: str, link: str, tail: str, position: str) -> str:
-    """Put the link above or below the body; tail (disclosure) always last."""
-    if position == "top":
-        return f"{link}\n\n{body}{tail}"
-    return f"{body}\n\n{link}{tail}"
+def _place_link(hook: str, link: str, rest: str, tail: str, position: str) -> str:
+    """Assemble hook + link + rest with NO blank lines between them — the link
+    must land on line 1 or 2, never scrolled past X's "Show more" fold.
+
+    position "bottom" (default): hook, then link, then rest.
+    position "top": link first, then hook, then rest.
+    """
+    lines = [link, hook] if position == "top" else [hook, link]
+    if rest:
+        lines.append(rest)
+    return "\n".join(lines) + tail
 
 
 def _assemble(body: str, link: str, tail: str, position: str = "bottom") -> str:
-    """Fit body + link + tail into 280, trimming the body if needed."""
-    overhead = LINK_WEIGHT + len(tail) + 2  # the blank line between body and link
-    room = TWEET_LIMIT - overhead
-    body = body.strip()
-    if len(body) > room:
-        body = _shorten_title(body, room)
-    return _place_link(body, link, tail, position)
+    """Split LLM copy into hook (line 1) + rest, fit it in 280, place the link
+    on line 1 or 2 per `position` — no blank lines, so the link stays visible
+    above X's "Show more" fold."""
+    lines = [ln.strip() for ln in body.strip().splitlines() if ln.strip()]
+    hook = lines[0] if lines else ""
+    rest = " · ".join(lines[1:]).strip()
+
+    room = TWEET_LIMIT - LINK_WEIGHT - len(tail) - len(hook) - 1
+    if rest and len(rest) > room:
+        rest = _shorten_title(rest, max(0, room))
+    return _place_link(hook, link, rest, tail, position)
 
 
 def tweet_length(text: str, link: str) -> int:
@@ -98,13 +109,12 @@ def _link_position(settings: Any) -> str:
 
 
 def render_template(product: Product, link: str, settings: Any) -> str:
-    """The house format:
+    """The house format, link on line 1 or 2 (no blank lines — see the module
+    docstring on why: X folds tall tweets and hides the link below "Show more"):
 
         ¡Bajó 60%! 🔥 AHORA $799.999 🤑🤑🤑
-
-        <title> · antes $1.999.999 🦈🦈🦈
-
         <link>
+        <title> · antes $1.999.999 🦈🦈🦈
     """
     tail = _tail(settings)
     position = _link_position(settings)
@@ -112,18 +122,18 @@ def render_template(product: Product, link: str, settings: Any) -> str:
     disc = product.discount_pct or 0
 
     if disc and product.original_price:
-        line1 = f"¡Bajó {disc}%! 🔥 AHORA {now} 🤑🤑🤑"
+        hook = f"¡Bajó {disc}%! 🔥 AHORA {now} 🤑🤑🤑"
         suffix = f" · antes {_fmt_price(product.original_price, product.currency)} 🦈🦈🦈"
     else:
         # No reliable discount/before-price: still lead with the price.
-        line1 = f"🦈🔥 AHORA {now} 🤑🤑🤑"
+        hook = f"🦈🔥 AHORA {now} 🤑🤑🤑"
         suffix = " 🦈🦈🦈"
 
     # Budget the title against everything else so the tweet fits in 280.
-    fixed = len(line1) + 2 + len(suffix) + 2 + LINK_WEIGHT + len(tail)
+    fixed = len(hook) + len(suffix) + 2 + LINK_WEIGHT + len(tail)
     room = max(20, TWEET_LIMIT - fixed)
-    body = f"{line1}\n\n{_shorten_title(product.title, room)}{suffix}"
-    return _place_link(body, link, tail, position)
+    rest = f"{_shorten_title(product.title, room)}{suffix}"
+    return _place_link(hook, link, rest, tail, position)
 
 
 def generate_with_llm(product: Product, link: str, settings: Any) -> Optional[str]:
@@ -148,13 +158,16 @@ def generate_with_llm(product: Product, link: str, settings: Any) -> Optional[st
     prompt = (
         f"Escribí un tweet para esta oferta de Mercado Libre.\n\n{facts}\n"
         f"Reglas:\n"
-        f"- Empezá con el emoji de tiburón 🦈 (la marca es 'Shark Deals').\n"
-        f"- Máximo {budget} caracteres (NO incluyas el link, se agrega después).\n"
-        f"- Resaltá el porcentaje de descuento EN MAYÚSCULAS (ej: 'BAJÓ 30%', '30% OFF').\n"
-        f"- Poné el precio actual en su propia línea, separado por una línea en blanco del resto de los montos.\n"
-        f"- Usá 2 o 3 emojis como mucho (uno es el 🦈 del inicio).\n"
-        f"- No inventes características que no estén arriba.\n"
-        f"- No agregues hashtags.\n"
+        f"- PRIMERA línea (el gancho): '¡Bajó X%!' o similar + 'AHORA' + el "
+        f"precio actual + emojis (ej: '¡Bajó 40%! 🔥 AHORA $99.999 🤑🤑🤑').\n"
+        f"- SEGUNDA línea: el nombre del producto.\n"
+        f"- Máximo 2 líneas, SIN líneas en blanco entre ellas — el link se "
+        f"agrega automáticamente después y tiene que quedar arriba del corte "
+        f"de 'Show more' de X, así que el tweet tiene que ser corto.\n"
+        f"- NO incluyas el link vos, se agrega después.\n"
+        f"- Máximo {budget} caracteres.\n"
+        f"- Usá 2 o 3 emojis como mucho.\n"
+        f"- No inventes características que no estén arriba. No agregues hashtags.\n"
     )
 
     try:
